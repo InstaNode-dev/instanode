@@ -1,0 +1,42 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: instant
+      POSTGRES_PASSWORD: instant
+      POSTGRES_DB: instant_lite
+    ports:
+      - "15432:5432"
+    volumes:
+      - ./schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U instant -d instant_lite"]
+      interval: 2s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "16379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 10
+
+  app:
+    build: .
+    ports:
+      - "18080:8080"
+    environment:
+      PORT: "8080"
+      BASE_URL: "http://localhost:18080"
+      DATABASE_URL: "postgres://instant:instant@postgres:5432/instant_lite?sslmode=disable"
+      CUSTOMER_DATABASE_URL: "postgres://instant:instant@postgres:5432/instant_lite?sslmode=disable"
+      REDIS_URL: "redis://redis:6379"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy

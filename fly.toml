@@ -1,0 +1,37 @@
+# fly.toml — Fly.io deployment config for instant-lite
+# Deploy: fly launch --copy-config --no-deploy && fly deploy
+#
+# Before deploying, create the Postgres and Redis addons:
+#   fly postgres create --name instant-lite-db --region iad --vm-size shared-cpu-1x
+#   fly redis create --name instant-lite-redis --region iad
+#
+# Then attach them:
+#   fly postgres attach instant-lite-db
+#   fly redis attach instant-lite-redis
+#
+# Set the base URL:
+#   fly secrets set BASE_URL=https://instant-lite.fly.dev
+
+app = "instant-lite-api"
+primary_region = "iad"
+
+[build]
+
+[env]
+  PORT = "8080"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [http_service.concurrency]
+    type = "requests"
+    hard_limit = 250
+    soft_limit = 200
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"

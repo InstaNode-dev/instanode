@@ -1,0 +1,79 @@
+# instant.dev
+
+> Zero-setup infrastructure. One HTTP call = real database.
+
+## Quick start
+
+Provision a Postgres database (no account, no API key):
+```
+curl -s -X POST https://instant.dev/db/new | jq
+```
+
+Provision a Redis cache:
+```
+curl -s -X POST https://instant.dev/cache/new | jq
+```
+
+Provision a webhook receiver:
+```
+curl -s -X POST https://instant.dev/webhook/new | jq
+```
+
+## Endpoints
+
+### POST /db/new
+Provision a Postgres database with pgvector.
+Returns `connection_url` (standard postgres:// URL), `token`, `tier`, `limits`.
+Anonymous tier: 10MB storage, 2 connections, expires in 24h.
+
+### POST /cache/new
+Provision a Redis cache with ACL namespace isolation.
+Returns `connection_url` (standard redis:// URL), `key_prefix`, `token`, `tier`, `limits`.
+Anonymous tier: 5MB memory, expires in 24h.
+
+### POST /webhook/new
+Provision a webhook receiver.
+Returns `receive_url`, `token`, `tier`, `limits`, `expires_at`.
+POST any payload to `receive_url` to store it. Anonymous: 100 stored, expires 24h.
+
+### POST /webhook/receive/{token}
+Send a webhook payload. Accepts any Content-Type. Stores headers + body in Redis.
+Returns `{ "ok": true, "id": "<request-id>" }`.
+
+### GET /healthz
+Returns `{ "ok": true, "service": "instant-lite" }`.
+
+## Response shape (all provisioning endpoints)
+
+```json
+{
+  "ok": true,
+  "id": "uuid",
+  "token": "uuid",
+  "connection_url": "postgres://...",
+  "tier": "anonymous",
+  "limits": { "storage_mb": 10, "connections": 2, "expires_in": "24h" },
+  "note": "Works now. Keep it forever (free 14-day trial): https://..."
+}
+```
+
+## Tiers
+
+| Tier | Price | Postgres | Redis | Webhooks | Expiry |
+|------|-------|----------|-------|----------|--------|
+| Free | $0 | 10MB / 2 conn | 5MB | 100 stored | 24h |
+| Developer | $12/mo | 500MB / 5 conn | 25MB | 1000 stored | Never |
+
+## No authentication required
+
+All provisioning endpoints work without any headers or API keys.
+Anonymous resources expire in 24h. The response `note` field contains a URL
+to claim resources permanently with a free account.
+
+## Standard protocols
+
+All connection URLs use standard protocol schemes:
+- Postgres: `postgres://user:pass@host:port/dbname`
+- Redis: `redis://user:pass@host:port/db`
+
+Works with every standard driver. No wrapper SDK needed.
