@@ -30,13 +30,13 @@ func initObservability(cfg *Config) func(context.Context) {
 	ctx := context.Background()
 
 	// Build the resource (identifies this service in the backend).
-	res, err := resource.Merge(
-		resource.Default(),
-		resource.NewWithAttributes(
-			semconv.SchemaURL,
+	res, err := resource.New(ctx,
+		resource.WithAttributes(
 			semconv.ServiceNameKey.String(cfg.Observability.ServiceName),
 			attribute.String("deployment.environment", cfg.Observability.Environment),
 		),
+		resource.WithTelemetrySDK(),
+		resource.WithHost(),
 	)
 	if err != nil {
 		slog.Error("observability: failed to create resource", "error", err)
