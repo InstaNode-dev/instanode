@@ -87,13 +87,8 @@ func dropPostgresDB(ctx context.Context, custDBURL, safe string) error {
 	}
 	defer conn.Close()
 
-	// Terminate active connections before dropping.
-	conn.ExecContext(ctx, fmt.Sprintf(
-		`SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '%s' AND pid <> pg_backend_pid()`,
-		dbName))
-
 	stmts := []string{
-		fmt.Sprintf(`DROP DATABASE IF EXISTS %s`, dbName),
+		fmt.Sprintf(`DROP DATABASE IF EXISTS %s WITH (FORCE)`, dbName),
 		fmt.Sprintf(`DROP USER IF EXISTS %s`, userName),
 	}
 	for _, stmt := range stmts {
