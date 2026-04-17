@@ -16,6 +16,8 @@ import (
 	_ "github.com/lib/pq"
 	"github.com/redis/go-redis/v9"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 //go:embed llms.txt
@@ -108,7 +110,7 @@ func main() {
 	})
 
 	limiter := newIPRateLimiter(cfg.Limits.RateRequestsPerSecond, cfg.Limits.RateBurst)
-	handler := rateLimitMiddleware(limiter, withMiddleware(panicRecoveryMiddleware(otelhttp.NewHandler(mux, "instant-lite")), cfg))
+	handler := rateLimitMiddleware(limiter, withMiddleware(panicRecoveryMiddleware(s.traceEnrichmentMiddleware(otelhttp.NewHandler(mux, "instant-lite"))), cfg))
 
 	srv := &http.Server{
 		Addr:         ":" + cfg.Server.Port,
@@ -167,6 +169,21 @@ func panicRecoveryMiddleware(next http.Handler) http.Handler {
 				writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "internal_server_error", "message": "An unexpected error occurred."})
 			}
 		}()
+		next.ServeHTTP(w, r)
+	})
+}
+
+// traceEnrichmentMiddleware injects the user's fingerprint (User ID) directly into the APM Trace Span
+func (s *server) traceEnrichmentMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fp := s.fingerprint(r)
+		
+		// Grab the OpenTelemetry span from the request context
+		span := trace.SpanFromContext(r.Context())
+		if span.SpanContext().IsValid() {
+			span.SetAttributes(attribute.String("user.id", fp))
+		}
+		
 		next.ServeHTTP(w, r)
 	})
 }
