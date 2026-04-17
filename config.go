@@ -13,12 +13,24 @@ import (
 // All values are set via config.yaml. The only environment variable
 // respected is CONFIG_PATH (to locate the YAML file itself).
 type Config struct {
-	Server   ServerConfig    `yaml:"server"`
-	Database DatabaseConfig  `yaml:"database"`
-	Redis    RedisConfig     `yaml:"redis"`
-	Limits   LimitsConfig    `yaml:"limits"`
-	Reaper   ReaperConfig    `yaml:"reaper"`
-	Postgres ProvisionConfig `yaml:"postgres"`
+	Server        ServerConfig        `yaml:"server"`
+	Database      DatabaseConfig      `yaml:"database"`
+	Redis         RedisConfig         `yaml:"redis"`
+	Limits        LimitsConfig        `yaml:"limits"`
+	Reaper        ReaperConfig        `yaml:"reaper"`
+	Postgres      ProvisionConfig     `yaml:"postgres"`
+	Observability ObservabilityConfig `yaml:"observability"`
+}
+
+type ObservabilityConfig struct {
+	Enabled      bool              `yaml:"enabled"`
+	ServiceName  string            `yaml:"service_name"`
+	Environment  string            `yaml:"environment"`
+	Exporter     string            `yaml:"exporter"`      // "otlp" or "stdout"
+	OTLPEndpoint string            `yaml:"otlp_endpoint"`
+	OTLPHeaders  map[string]string `yaml:"otlp_headers"`
+	OTLPInsecure bool              `yaml:"otlp_insecure"` // true for local collectors
+	SampleRate   float64           `yaml:"sample_rate"`   // 0.0 to 1.0
 }
 
 type ServerConfig struct {
@@ -103,6 +115,16 @@ func DefaultConfig() *Config {
 			ConnLimit:        2,
 			StorageMB:        10,
 			StatementTimeout: "30s",
+		},
+		Observability: ObservabilityConfig{
+			Enabled:      false,
+			ServiceName:  "instant-lite-api",
+			Environment:  "development",
+			Exporter:     "otlp",
+			OTLPEndpoint: "localhost:4318",
+			OTLPHeaders:  map[string]string{},
+			OTLPInsecure: true,
+			SampleRate:   1.0,
 		},
 	}
 }

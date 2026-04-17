@@ -1,6 +1,6 @@
 # instant-lite-api configuration
 # All values have sensible defaults. Only override what you need.
-# Environment variables always take priority over this file.
+# All values have sensible defaults. Only override what you need.
 
 server:
   port: "8080"
@@ -38,3 +38,31 @@ postgres:
   conn_limit: 2                 # CONNECTION LIMIT per provisioned database/user
   storage_mb: 10                # Storage quota hint (used for temp_file_limit)
   statement_timeout: "30s"      # Max query execution time per provisioned user
+
+# Observability (OpenTelemetry — vendor-agnostic)
+# Supports any OTLP-compatible backend. Examples:
+#
+# New Relic:
+#   otlp_endpoint: "otlp.nr-data.net"
+#   otlp_headers:
+#     api-key: "YOUR_NEW_RELIC_LICENSE_KEY"
+#
+# Datadog (via Datadog Agent OTLP receiver):
+#   otlp_endpoint: "localhost:4318"
+#   otlp_insecure: true
+#
+# Grafana Cloud:
+#   otlp_endpoint: "otlp-gateway-prod-us-east-0.grafana.net"
+#   otlp_headers:
+#     authorization: "Basic YOUR_BASE64_ENCODED_CREDENTIALS"
+#
+observability:
+  enabled: false                # Set to true to enable tracing
+  service_name: "instant-lite-api"
+  environment: "development"
+  exporter: "otlp"              # "otlp" or "stdout" (stdout for local debugging)
+  otlp_endpoint: "otlp.nr-data.net"  # New Relic default
+  otlp_headers:                 # Auth headers for your backend
+    api-key: ""
+  otlp_insecure: false          # Set true for local collectors (no TLS)
+  sample_rate: 1.0              # 1.0 = trace everything, 0.1 = 10% sampling

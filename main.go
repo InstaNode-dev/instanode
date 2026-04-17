@@ -14,6 +14,7 @@ import (
 
 	_ "github.com/lib/pq"
 	"github.com/redis/go-redis/v9"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
 //go:embed llms.txt
@@ -36,6 +37,9 @@ func main() {
 	cfg := LoadConfig(configPath)
 
 	slog.Info("instant-lite config loaded", "summary", cfg.Summary())
+
+	// Initialize OpenTelemetry (vendor-agnostic — works with New Relic, Datadog, Grafana, etc.)
+	shutdownOtel := initObservability(cfg)
 
 	db, err := sql.Open("postgres", cfg.Database.PlatformURL)
 	if err != nil {
@@ -103,7 +107,7 @@ func main() {
 	})
 
 	limiter := newIPRateLimiter(cfg.Limits.RateRequestsPerSecond, cfg.Limits.RateBurst)
-	handler := rateLimitMiddleware(limiter, withMiddleware(mux, cfg))
+	handler := rateLimitMiddleware(limiter, withMiddleware(otelhttp.NewHandler(mux, "instant-lite"), cfg))
 
 	srv := &http.Server{
 		Addr:         ":" + cfg.Server.Port,
@@ -128,6 +132,7 @@ func main() {
 
 	ctx, cancel = context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+	shutdownOtel(ctx)
 	srv.Shutdown(ctx)
 	db.Close()
 	rdb.Close()
