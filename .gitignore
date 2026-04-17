@@ -1,0 +1,7 @@
+# Secrets — never commit these
+.env
+config.prod.yaml
+config.local.yaml
+
+# Binary
+instant-lite-api
