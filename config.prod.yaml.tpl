@@ -3,7 +3,7 @@
 
 server:
   port: "8080"
-  base_url: "https://api.instant.dev"
+  base_url: "${APP_URL}"
   read_timeout: "10s"
   write_timeout: "30s"
   idle_timeout: "120s"
