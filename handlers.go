@@ -48,7 +48,7 @@ func (s *server) handleNewDB(w http.ResponseWriter, r *http.Request) {
 
 	connURL, err := provisionPostgres(ctx, s.custDBURL, token.String(), s.cfg)
 	if err != nil {
-		slog.Error("db provision failed", "error", err)
+		slog.ErrorContext(ctx, "db provision failed", "error", err)
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
 			"ok": false, "error": "provision_failed", "message": "Failed to provision Postgres database",
 		})
@@ -61,14 +61,14 @@ func (s *server) handleNewDB(w http.ResponseWriter, r *http.Request) {
 		 VALUES ($1, $2, 'postgres', 'anonymous', $3, $4, $5)`,
 		id, token, fp, connURL, expiresAt)
 	if err != nil {
-		slog.Error("db resource insert failed", "error", err)
+		slog.ErrorContext(ctx, "db resource insert failed", "error", err)
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
 			"ok": false, "error": "internal_error", "message": "Failed to save resource",
 		})
 		return
 	}
 
-	slog.Info("provision.success", "service", "postgres", "token", token.String(), "fingerprint", fp)
+	slog.InfoContext(ctx, "provision.success", "service", "postgres", "token", token.String(), "fingerprint", fp)
 
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"ok":             true,
@@ -117,7 +117,7 @@ func (s *server) handleNewCache(w http.ResponseWriter, r *http.Request) {
 
 	creds, err := provisionRedis(ctx, s.rdb, token.String())
 	if err != nil {
-		slog.Error("cache provision failed", "error", err)
+		slog.ErrorContext(ctx, "cache provision failed", "error", err)
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
 			"ok": false, "error": "provision_failed", "message": "Failed to provision Redis cache",
 		})
@@ -130,14 +130,14 @@ func (s *server) handleNewCache(w http.ResponseWriter, r *http.Request) {
 		 VALUES ($1, $2, 'redis', 'anonymous', $3, $4, $5, $6)`,
 		id, token, fp, creds.url, creds.keyPrefix, expiresAt)
 	if err != nil {
-		slog.Error("cache resource insert failed", "error", err)
+		slog.ErrorContext(ctx, "cache resource insert failed", "error", err)
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
 			"ok": false, "error": "internal_error", "message": "Failed to save resource",
 		})
 		return
 	}
 
-	slog.Info("provision.success", "service", "redis", "token", token.String(), "fingerprint", fp)
+	slog.InfoContext(ctx, "provision.success", "service", "redis", "token", token.String(), "fingerprint", fp)
 
 	resp := map[string]any{
 		"ok":             true,
@@ -191,14 +191,14 @@ func (s *server) handleNewWebhook(w http.ResponseWriter, r *http.Request) {
 		 VALUES ($1, $2, 'webhook', 'anonymous', $3, $4, $5)`,
 		id, token, fp, receiveURL, expiresAt)
 	if err != nil {
-		slog.Error("webhook resource insert failed", "error", err)
+		slog.ErrorContext(ctx, "webhook resource insert failed", "error", err)
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
 			"ok": false, "error": "internal_error", "message": "Failed to save resource",
 		})
 		return
 	}
 
-	slog.Info("provision.success", "service", "webhook", "token", token.String(), "fingerprint", fp)
+	slog.InfoContext(ctx, "provision.success", "service", "webhook", "token", token.String(), "fingerprint", fp)
 
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"ok":          true,
@@ -263,7 +263,7 @@ func (s *server) handleWebhookReceive(w http.ResponseWriter, r *http.Request) {
 	pipe.LTrim(ctx, listKey, 0, s.cfg.Limits.WebhookMaxStored-1)
 	pipe.Expire(ctx, listKey, anonTTL)
 	if _, pipeErr := pipe.Exec(ctx); pipeErr != nil {
-		slog.Warn("webhook store failed (fail-open)", "error", pipeErr)
+		slog.WarnContext(ctx, "webhook store failed (fail-open)", "error", pipeErr)
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": reqID})
@@ -290,7 +290,7 @@ func (s *server) checkLimitAndIncrement(ctx context.Context, fp, resourceType st
 	newCount, err := s.rdb.Incr(ctx, key).Result()
 	if err != nil {
 		// Redis down — fall back to Postgres count (hard cap, never fail-open).
-		slog.Warn("redis unavailable, falling back to postgres count", "error", err)
+		slog.WarnContext(ctx, "redis unavailable, falling back to postgres count", "error", err)
 		return s.checkLimitPostgresFallback(ctx, fp)
 	}
 
@@ -327,7 +327,7 @@ func (s *server) checkLimitPostgresFallback(ctx context.Context, fp string) (boo
 		`SELECT COUNT(*) FROM resources
 		 WHERE fingerprint = $1 AND created_at >= $2`, fp, todayStart).Scan(&count)
 	if err != nil {
-		slog.Error("postgres fallback count failed — blocking provision", "error", err)
+		slog.ErrorContext(ctx, "postgres fallback count failed — blocking provision", "error", err)
 		return true, nil // fail closed: block if we can't count
 	}
 	return count >= s.cfg.Limits.MaxProvisionsPerDay, nil

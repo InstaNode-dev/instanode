@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"syscall"
 	"time"
 
@@ -107,7 +108,7 @@ func main() {
 	})
 
 	limiter := newIPRateLimiter(cfg.Limits.RateRequestsPerSecond, cfg.Limits.RateBurst)
-	handler := rateLimitMiddleware(limiter, withMiddleware(otelhttp.NewHandler(mux, "instant-lite"), cfg))
+	handler := rateLimitMiddleware(limiter, withMiddleware(panicRecoveryMiddleware(otelhttp.NewHandler(mux, "instant-lite")), cfg))
 
 	srv := &http.Server{
 		Addr:         ":" + cfg.Server.Port,
@@ -145,12 +146,27 @@ func withMiddleware(next http.Handler, cfg *Config) http.Handler {
 
 		w.Header().Set("X-Request-ID", fmt.Sprintf("%d", time.Now().UnixNano()))
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		w.Header().Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS, PUT, DELETE")
+		w.Header().Set("Access-Control-Allow-Headers", "Accept, Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, X-Requested-With")
 		if r.Method == http.MethodOptions {
-			w.WriteHeader(http.StatusNoContent)
+			w.WriteHeader(http.StatusOK)
 			return
 		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// panicRecoveryMiddleware catches panics, logs the stack trace to New Relic with the Trace ID, and returns a 500.
+func panicRecoveryMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			if err := recover(); err != nil {
+				// We use ErrorContext specifically so otelslog can automatically grab the 
+				// Trace ID / Span ID strictly injected by the otelhttp middleware.
+				slog.ErrorContext(r.Context(), "FATAL PANIC", "error", err, "stack", string(debug.Stack()))
+				writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "internal_server_error", "message": "An unexpected error occurred."})
+			}
+		}()
 		next.ServeHTTP(w, r)
 	})
 }
