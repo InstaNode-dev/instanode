@@ -60,8 +60,15 @@ func main() {
 
 	s := &server{db: db, rdb: rdb, baseURL: baseURL, custDBURL: custDBURL}
 
-	// Start the expired resource reaper (runs every 5 minutes).
-	startReaper(db, rdb, custDBURL, 5*time.Minute)
+	reaperIntervalStr := env("REAPER_INTERVAL", "5m")
+	reaperInterval, err := time.ParseDuration(reaperIntervalStr)
+	if err != nil {
+		slog.Warn("invalid REAPER_INTERVAL format, defaulting to 5m", "error", err)
+		reaperInterval = 5 * time.Minute
+	}
+
+	// Start the expired resource reaper.
+	startReaper(db, rdb, custDBURL, reaperInterval)
 
 	mux := http.NewServeMux()
 
