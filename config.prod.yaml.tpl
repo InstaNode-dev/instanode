@@ -9,13 +9,13 @@ server:
   idle_timeout: "120s"
 
 database:
-  platform_url: "postgres://instant:${POSTGRES_PASSWORD}@postgres:5432/instant_lite?sslmode=disable"
-  customer_url: "postgres://instant:${POSTGRES_PASSWORD}@postgres:5432/instant_lite?sslmode=disable"
+  platform_url: "${DATABASE_URL}"
+  customer_url: "${DATABASE_URL}"
   max_open_conns: 20
   max_idle_conns: 5
 
 redis:
-  url: "redis://:${REDIS_PASSWORD}@redis:6379"
+  url: "${REDIS_URL}"
 
 limits:
   rate_requests_per_second: 10
