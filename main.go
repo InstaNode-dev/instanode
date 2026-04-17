@@ -61,11 +61,18 @@ func main() {
 		os.Exit(1)
 	}
 
-	opts, err := redis.ParseURL(cfg.Redis.URL)
-	if err != nil {
-		slog.Error("invalid redis url", "url", cfg.Redis.URL, "error", err)
-		fmt.Fprintf(os.Stderr, "FATAL: invalid redis url: %v\n", err)
-		os.Exit(1)
+	var opts *redis.Options
+	if cfg.Redis.URL != "" {
+		var err error
+		opts, err = redis.ParseURL(cfg.Redis.URL)
+		if err != nil {
+			slog.Error("invalid redis url", "url", cfg.Redis.URL, "error", err)
+			fmt.Fprintf(os.Stderr, "FATAL: invalid redis url: %v\n", err)
+			os.Exit(1)
+		}
+	} else {
+		// Mock options if we are intentionally skipping Redis
+		opts = &redis.Options{Addr: "localhost:0"}
 	}
 	rdb := redis.NewClient(opts)
 	if err := rdb.Ping(context.Background()).Err(); err != nil {
