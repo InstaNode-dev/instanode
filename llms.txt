@@ -1,4 +1,4 @@
-# instant.dev
+# instanode.dev
 
 > Zero-setup infrastructure. One HTTP call = real database.
 
@@ -6,17 +6,17 @@
 
 Provision a Postgres database (no account, no API key):
 ```
-curl -s -X POST https://instant.dev/db/new | jq
+curl -s -X POST https://instanode.dev/db/new | jq
 ```
 
 Provision a Redis cache:
 ```
-curl -s -X POST https://instant.dev/cache/new | jq
+curl -s -X POST https://instanode.dev/cache/new | jq
 ```
 
 Provision a webhook receiver:
 ```
-curl -s -X POST https://instant.dev/webhook/new | jq
+curl -s -X POST https://instanode.dev/webhook/new | jq
 ```
 
 ## Endpoints

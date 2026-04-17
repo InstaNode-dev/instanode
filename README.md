@@ -1,16 +1,16 @@
 # instant-lite-api
 
-Backend API for instant.dev — provisions real Postgres databases, Redis caches, and webhook
+Backend API for instanode.dev — provisions real Postgres databases, Redis caches, and webhook
 receivers with one HTTP call. No account, no Docker, no configuration.
 
 ## Architecture
 
 ```
-instant.dev (GitHub Pages)  ←  Static HTML/CSS/JS (instant-lite-web/)
+instanode.dev (GitHub Pages)  ←  Static HTML/CSS/JS (instant-lite-web/)
        │
        │  curl commands point to:
        ▼
-api.instant.dev (bare metal / Fly.io)  ←  This repo
+api.instanode.dev (bare metal / Fly.io)  ←  This repo
        │
        ├── Postgres (CREATE DATABASE per token)
        └── Redis (ACL SETUSER per token)
@@ -122,7 +122,7 @@ psql instant_lite < schema.sql
 Put Caddy in front for automatic HTTPS:
 ```
 # /etc/caddy/Caddyfile
-api.instant.dev {
+api.instanode.dev {
     reverse_proxy localhost:8080
 }
 ```
@@ -137,7 +137,7 @@ api.instant.dev {
 | POST | `/webhook/receive/{token}` | Receive a webhook payload |
 | GET | `/healthz` | Health check |
 | GET | `/llms.txt` | Machine-readable docs for AI agents |
-| GET | `/` | 302 redirect to https://instant.dev |
+| GET | `/` | 302 redirect to https://instanode.dev |
 
 ## Security
 
