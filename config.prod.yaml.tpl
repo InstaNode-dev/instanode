@@ -15,7 +15,7 @@ database:
   max_idle_conns: 5
 
 redis:
-  url: "${REDIS_URL}"
+  url: ""
 
 limits:
   rate_requests_per_second: 10
