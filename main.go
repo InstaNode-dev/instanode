@@ -20,26 +20,30 @@ import (
 var llmsTxt []byte
 
 type server struct {
-	db       *sql.DB
-	rdb      *redis.Client
-	baseURL  string
+	db        *sql.DB
+	rdb       *redis.Client
+	cfg       *Config
+	baseURL   string
 	custDBURL string // customer Postgres (where we CREATE DATABASE)
 }
 
 func main() {
-	port := env("PORT", "8080")
-	baseURL := env("BASE_URL", "http://localhost:"+port)
-	platformDBURL := env("DATABASE_URL", "postgres://instant:instant@localhost:5432/instant_lite?sslmode=disable")
-	custDBURL := env("CUSTOMER_DATABASE_URL", platformDBURL)
-	redisURL := env("REDIS_URL", "redis://localhost:6379")
+	// CONFIG_PATH is the only environment variable used — everything else lives in config.yaml.
+	configPath := "config.yaml"
+	if v := os.Getenv("CONFIG_PATH"); v != "" {
+		configPath = v
+	}
+	cfg := LoadConfig(configPath)
 
-	db, err := sql.Open("postgres", platformDBURL)
+	slog.Info("instant-lite config loaded", "summary", cfg.Summary())
+
+	db, err := sql.Open("postgres", cfg.Database.PlatformURL)
 	if err != nil {
 		slog.Error("failed to connect to platform database", "error", err)
 		os.Exit(1)
 	}
-	db.SetMaxOpenConns(20)
-	db.SetMaxIdleConns(5)
+	db.SetMaxOpenConns(cfg.Database.MaxOpenConns)
+	db.SetMaxIdleConns(cfg.Database.MaxIdleConns)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -48,9 +52,9 @@ func main() {
 		os.Exit(1)
 	}
 
-	opts, err := redis.ParseURL(redisURL)
+	opts, err := redis.ParseURL(cfg.Redis.URL)
 	if err != nil {
-		slog.Error("invalid REDIS_URL", "error", err)
+		slog.Error("invalid redis url", "url", cfg.Redis.URL, "error", err)
 		os.Exit(1)
 	}
 	rdb := redis.NewClient(opts)
@@ -58,17 +62,16 @@ func main() {
 		slog.Warn("redis unreachable — rate limiting and webhooks will be degraded", "error", err)
 	}
 
-	s := &server{db: db, rdb: rdb, baseURL: baseURL, custDBURL: custDBURL}
-
-	reaperIntervalStr := env("REAPER_INTERVAL", "5m")
-	reaperInterval, err := time.ParseDuration(reaperIntervalStr)
-	if err != nil {
-		slog.Warn("invalid REAPER_INTERVAL format, defaulting to 5m", "error", err)
-		reaperInterval = 5 * time.Minute
+	s := &server{
+		db:        db,
+		rdb:       rdb,
+		cfg:       cfg,
+		baseURL:   cfg.Server.BaseURL,
+		custDBURL: cfg.Database.CustomerURL,
 	}
 
 	// Start the expired resource reaper.
-	startReaper(db, rdb, custDBURL, reaperInterval)
+	startReaper(db, rdb, cfg, cfg.Database.CustomerURL)
 
 	mux := http.NewServeMux()
 
@@ -99,20 +102,19 @@ func main() {
 		http.Redirect(w, r, "https://instant.dev", http.StatusFound)
 	})
 
-	// 10 req/s per IP with burst of 20 — prevents HTTP-level flooding.
-	limiter := newIPRateLimiter(10, 20)
-	handler := rateLimitMiddleware(limiter, withMiddleware(mux))
+	limiter := newIPRateLimiter(cfg.Limits.RateRequestsPerSecond, cfg.Limits.RateBurst)
+	handler := rateLimitMiddleware(limiter, withMiddleware(mux, cfg))
 
 	srv := &http.Server{
-		Addr:         ":" + port,
+		Addr:         ":" + cfg.Server.Port,
 		Handler:      handler,
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 30 * time.Second,
-		IdleTimeout:  60 * time.Second,
+		ReadTimeout:  cfg.ParsedReadTimeout(),
+		WriteTimeout: cfg.ParsedWriteTimeout(),
+		IdleTimeout:  cfg.ParsedIdleTimeout(),
 	}
 
 	go func() {
-		slog.Info("instant-lite starting", "port", port, "base_url", baseURL)
+		slog.Info("instant-lite starting", "port", cfg.Server.Port, "base_url", cfg.Server.BaseURL)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			slog.Error("server failed", "error", err)
 			os.Exit(1)
@@ -131,19 +133,10 @@ func main() {
 	rdb.Close()
 }
 
-func env(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return fallback
-}
-
-const maxRequestBodyBytes = 1 << 20 // 1 MB — applies to all endpoints
-
-func withMiddleware(next http.Handler) http.Handler {
+func withMiddleware(next http.Handler, cfg *Config) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Cap request body to prevent memory exhaustion.
-		r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
+		r.Body = http.MaxBytesReader(w, r.Body, cfg.Limits.MaxRequestBodyBytes)
 
 		w.Header().Set("X-Request-ID", fmt.Sprintf("%d", time.Now().UnixNano()))
 		w.Header().Set("Access-Control-Allow-Origin", "*")

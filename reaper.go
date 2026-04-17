@@ -14,24 +14,26 @@ import (
 // startReaper launches a background goroutine that periodically cleans up
 // expired resources: drops Postgres databases, deletes Redis ACL users,
 // and marks resource rows as 'expired'.
-func startReaper(db *sql.DB, rdb *redis.Client, custDBURL string, interval time.Duration) {
+func startReaper(db *sql.DB, rdb *redis.Client, cfg *Config, custDBURL string) {
+	interval := cfg.ParsedReaperInterval()
 	go func() {
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for range ticker.C {
-			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-			reapExpired(ctx, db, rdb, custDBURL)
+			timeout := cfg.ParsedReaperTimeout()
+			ctx, cancel := context.WithTimeout(context.Background(), timeout)
+			reapExpired(ctx, db, rdb, cfg, custDBURL)
 			cancel()
 		}
 	}()
 	slog.Info("reaper started", "interval", interval.String())
 }
 
-func reapExpired(ctx context.Context, db *sql.DB, rdb *redis.Client, custDBURL string) {
+func reapExpired(ctx context.Context, db *sql.DB, rdb *redis.Client, cfg *Config, custDBURL string) {
 	rows, err := db.QueryContext(ctx,
 		`SELECT id, token, resource_type FROM resources
 		 WHERE status = 'active' AND expires_at IS NOT NULL AND expires_at < NOW()
-		 LIMIT 50`)
+		 LIMIT $1`, cfg.Reaper.BatchSize)
 	if err != nil {
 		slog.Error("reaper: query failed", "error", err)
 		return

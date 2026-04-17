@@ -11,12 +11,7 @@ import (
 	_ "github.com/lib/pq"
 )
 
-const (
-	anonConnLimit   = 2
-	anonStorageMB   = 10
-)
-
-func provisionPostgres(ctx context.Context, custDBURL, token string) (string, error) {
+func provisionPostgres(ctx context.Context, custDBURL, token string, cfg *Config) (string, error) {
 	safe := sanitizeToken(token)
 	dbName := "db_" + safe
 	userName := "usr_" + safe
@@ -34,9 +29,10 @@ func provisionPostgres(ctx context.Context, custDBURL, token string) (string, er
 	// We still double any single quotes in the password as defense-in-depth.
 	safePassword := strings.ReplaceAll(password, "'", "''")
 
+	connLimit := cfg.Postgres.ConnLimit
 	stmts := []string{
-		fmt.Sprintf(`CREATE USER %s WITH PASSWORD '%s' CONNECTION LIMIT %d`, userName, safePassword, anonConnLimit),
-		fmt.Sprintf(`CREATE DATABASE %s OWNER %s CONNECTION LIMIT %d`, dbName, userName, anonConnLimit),
+		fmt.Sprintf(`CREATE USER %s WITH PASSWORD '%s' CONNECTION LIMIT %d`, userName, safePassword, connLimit),
+		fmt.Sprintf(`CREATE DATABASE %s OWNER %s CONNECTION LIMIT %d`, dbName, userName, connLimit),
 	}
 	for _, stmt := range stmts {
 		if _, err := conn.ExecContext(ctx, stmt); err != nil {
@@ -57,13 +53,13 @@ func provisionPostgres(ctx context.Context, custDBURL, token string) (string, er
 		newConn.ExecContext(ctx, fmt.Sprintf("REVOKE CREATE ON DATABASE %s FROM PUBLIC", dbName))
 
 		// Set statement timeout to prevent long-running queries from hogging resources.
-		newConn.ExecContext(ctx, fmt.Sprintf("ALTER ROLE %s SET statement_timeout = '30s'", userName))
+		newConn.ExecContext(ctx, fmt.Sprintf("ALTER ROLE %s SET statement_timeout = '%s'", userName, cfg.Postgres.StatementTimeout))
 
 		// Set a tablespace quota isn't natively supported in Postgres, but we can
 		// enforce it by revoking temporary table creation and setting a trigger-based
 		// or periodic check. For Phase 0, we rely on the periodic reaper + monitoring.
 		// However, we CAN set a hard limit via ALTER DATABASE ... SET temp_file_limit.
-		newConn.ExecContext(ctx, fmt.Sprintf("ALTER DATABASE %s SET temp_file_limit = '%dMB'", dbName, anonStorageMB*2))
+		newConn.ExecContext(ctx, fmt.Sprintf("ALTER DATABASE %s SET temp_file_limit = '%dMB'", dbName, cfg.Postgres.StorageMB*2))
 
 		newConn.Close()
 	}

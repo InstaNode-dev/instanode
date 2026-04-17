@@ -30,11 +30,9 @@ services:
     ports:
       - "18080:8080"
     environment:
-      PORT: "8080"
-      BASE_URL: "http://localhost:18080"
-      DATABASE_URL: "postgres://instant:instant@postgres:5432/instant_lite?sslmode=disable"
-      CUSTOMER_DATABASE_URL: "postgres://instant:instant@postgres:5432/instant_lite?sslmode=disable"
-      REDIS_URL: "redis://redis:6379"
+      CONFIG_PATH: "/app/config.yaml"
+    volumes:
+      - ./config.docker.yaml:/app/config.yaml:ro
     depends_on:
       postgres:
         condition: service_healthy

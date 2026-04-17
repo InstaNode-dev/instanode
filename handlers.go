@@ -16,18 +16,11 @@ import (
 	"github.com/google/uuid"
 )
 
-const (
-	anonTTL              = 24 * time.Hour
-	maxProvisionsPerDay  = 5
-	maxWebhookBodyBytes  = 1 << 20 // 1 MB
-	webhookMaxStoredAnon = 100
-)
-
 // ── POST /db/new ────────────────────────────────────────────────────────────
 
 func (s *server) handleNewDB(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	fp := fingerprint(r)
+	fp := s.fingerprint(r)
 
 	exceeded, existing := s.checkLimitAndIncrement(ctx, fp, "postgres")
 	if exceeded {
@@ -38,21 +31,22 @@ func (s *server) handleNewDB(w http.ResponseWriter, r *http.Request) {
 				"token":          existing.token,
 				"connection_url": existing.connectionURL,
 				"tier":           "anonymous",
-				"limits":         map[string]any{"storage_mb": 10, "connections": 2, "expires_in": "24h"},
+				"limits":         map[string]any{"storage_mb": s.cfg.Postgres.StorageMB, "connections": s.cfg.Postgres.ConnLimit, "expires_in": s.cfg.Limits.AnonTTL},
 				"note":           "Returning your existing database. Keep it forever: " + s.baseURL + "/start",
 			})
 		} else {
 			writeJSON(w, http.StatusTooManyRequests, map[string]any{
-				"ok": false, "error": "rate_limited", "message": "Daily provision limit reached (5/day). Keep resources forever: " + s.baseURL + "/start",
+				"ok": false, "error": "rate_limited", "message": fmt.Sprintf("Daily provision limit reached (%d/day). Keep resources forever: %s/start", s.cfg.Limits.MaxProvisionsPerDay, s.baseURL),
 			})
 		}
 		return
 	}
 
 	token := uuid.New()
+	anonTTL := s.cfg.ParsedAnonTTL()
 	expiresAt := time.Now().UTC().Add(anonTTL)
 
-	connURL, err := provisionPostgres(ctx, s.custDBURL, token.String())
+	connURL, err := provisionPostgres(ctx, s.custDBURL, token.String(), s.cfg)
 	if err != nil {
 		slog.Error("db provision failed", "error", err)
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
@@ -82,7 +76,7 @@ func (s *server) handleNewDB(w http.ResponseWriter, r *http.Request) {
 		"token":          token.String(),
 		"connection_url": connURL,
 		"tier":           "anonymous",
-		"limits":         map[string]any{"storage_mb": 10, "connections": 2, "expires_in": "24h"},
+		"limits":         map[string]any{"storage_mb": s.cfg.Postgres.StorageMB, "connections": s.cfg.Postgres.ConnLimit, "expires_in": s.cfg.Limits.AnonTTL},
 		"note":           fmt.Sprintf("Works now. Keep it forever (free 14-day trial): %s/start", s.baseURL),
 	})
 }
@@ -91,7 +85,7 @@ func (s *server) handleNewDB(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) handleNewCache(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	fp := fingerprint(r)
+	fp := s.fingerprint(r)
 
 	exceeded, existing := s.checkLimitAndIncrement(ctx, fp, "redis")
 	if exceeded {
@@ -102,7 +96,7 @@ func (s *server) handleNewCache(w http.ResponseWriter, r *http.Request) {
 				"token":          existing.token,
 				"connection_url": existing.connectionURL,
 				"tier":           "anonymous",
-				"limits":         map[string]any{"memory_mb": 5, "expires_in": "24h"},
+				"limits":         map[string]any{"memory_mb": 5, "expires_in": s.cfg.Limits.AnonTTL},
 				"note":           "Returning your existing cache. Keep it forever: " + s.baseURL + "/start",
 			}
 			if existing.keyPrefix != "" {
@@ -111,13 +105,14 @@ func (s *server) handleNewCache(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusOK, resp)
 		} else {
 			writeJSON(w, http.StatusTooManyRequests, map[string]any{
-				"ok": false, "error": "rate_limited", "message": "Daily provision limit reached (5/day). Keep resources forever: " + s.baseURL + "/start",
+				"ok": false, "error": "rate_limited", "message": fmt.Sprintf("Daily provision limit reached (%d/day). Keep resources forever: %s/start", s.cfg.Limits.MaxProvisionsPerDay, s.baseURL),
 			})
 		}
 		return
 	}
 
 	token := uuid.New()
+	anonTTL := s.cfg.ParsedAnonTTL()
 	expiresAt := time.Now().UTC().Add(anonTTL)
 
 	creds, err := provisionRedis(ctx, s.rdb, token.String())
@@ -150,7 +145,7 @@ func (s *server) handleNewCache(w http.ResponseWriter, r *http.Request) {
 		"token":          token.String(),
 		"connection_url": creds.url,
 		"tier":           "anonymous",
-		"limits":         map[string]any{"memory_mb": 5, "expires_in": "24h"},
+		"limits":         map[string]any{"memory_mb": 5, "expires_in": s.cfg.Limits.AnonTTL},
 		"note":           fmt.Sprintf("Works now. Keep it forever (free 14-day trial): %s/start", s.baseURL),
 	}
 	if creds.keyPrefix != "" {
@@ -163,7 +158,7 @@ func (s *server) handleNewCache(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) handleNewWebhook(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	fp := fingerprint(r)
+	fp := s.fingerprint(r)
 
 	exceeded, existing := s.checkLimitAndIncrement(ctx, fp, "webhook")
 	if exceeded {
@@ -174,18 +169,19 @@ func (s *server) handleNewWebhook(w http.ResponseWriter, r *http.Request) {
 				"token":       existing.token,
 				"receive_url": existing.connectionURL,
 				"tier":        "anonymous",
-				"limits":      map[string]any{"requests_stored": webhookMaxStoredAnon, "expires_in": "24h"},
+				"limits":      map[string]any{"requests_stored": s.cfg.Limits.WebhookMaxStored, "expires_in": s.cfg.Limits.AnonTTL},
 				"note":        "Returning your existing webhook. Keep it forever: " + s.baseURL + "/start",
 			})
 		} else {
 			writeJSON(w, http.StatusTooManyRequests, map[string]any{
-				"ok": false, "error": "rate_limited", "message": "Daily provision limit reached (5/day). Keep resources forever: " + s.baseURL + "/start",
+				"ok": false, "error": "rate_limited", "message": fmt.Sprintf("Daily provision limit reached (%d/day). Keep resources forever: %s/start", s.cfg.Limits.MaxProvisionsPerDay, s.baseURL),
 			})
 		}
 		return
 	}
 
 	token := uuid.New()
+	anonTTL := s.cfg.ParsedAnonTTL()
 	expiresAt := time.Now().UTC().Add(anonTTL)
 	receiveURL := fmt.Sprintf("%s/webhook/receive/%s", s.baseURL, token.String())
 
@@ -211,7 +207,7 @@ func (s *server) handleNewWebhook(w http.ResponseWriter, r *http.Request) {
 		"receive_url": receiveURL,
 		"tier":        "anonymous",
 		"expires_at":  expiresAt,
-		"limits":      map[string]any{"requests_stored": webhookMaxStoredAnon, "expires_in": "24h"},
+		"limits":      map[string]any{"requests_stored": s.cfg.Limits.WebhookMaxStored, "expires_in": s.cfg.Limits.AnonTTL},
 		"note":        fmt.Sprintf("Works now. Keep it forever (free 14-day trial): %s/start", s.baseURL),
 	})
 }
@@ -244,7 +240,7 @@ func (s *server) handleWebhookReceive(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	body, _ := io.ReadAll(io.LimitReader(r.Body, maxWebhookBodyBytes))
+	body, _ := io.ReadAll(io.LimitReader(r.Body, s.cfg.Limits.WebhookMaxBodyBytes))
 
 	headers := make(map[string]string)
 	for k, v := range r.Header {
@@ -260,10 +256,11 @@ func (s *server) handleWebhookReceive(w http.ResponseWriter, r *http.Request) {
 		"received_at": time.Now().UTC().Format(time.RFC3339),
 	})
 
+	anonTTL := s.cfg.ParsedAnonTTL()
 	listKey := "wh:list:" + tokenStr
 	pipe := s.rdb.Pipeline()
 	pipe.LPush(ctx, listKey, string(payload))
-	pipe.LTrim(ctx, listKey, 0, webhookMaxStoredAnon-1)
+	pipe.LTrim(ctx, listKey, 0, s.cfg.Limits.WebhookMaxStored-1)
 	pipe.Expire(ctx, listKey, anonTTL)
 	if _, pipeErr := pipe.Exec(ctx); pipeErr != nil {
 		slog.Warn("webhook store failed (fail-open)", "error", pipeErr)
@@ -287,6 +284,7 @@ type existingResource struct {
 func (s *server) checkLimitAndIncrement(ctx context.Context, fp, resourceType string) (bool, *existingResource) {
 	date := time.Now().UTC().Format("2006-01-02")
 	key := fmt.Sprintf("prov:%s:%s", fp, date)
+	maxProvisions := int64(s.cfg.Limits.MaxProvisionsPerDay)
 
 	// Atomic increment-then-check: no race window between read and write.
 	newCount, err := s.rdb.Incr(ctx, key).Result()
@@ -301,7 +299,7 @@ func (s *server) checkLimitAndIncrement(ctx context.Context, fp, resourceType st
 		s.rdb.Expire(ctx, key, 25*time.Hour)
 	}
 
-	if newCount <= maxProvisionsPerDay {
+	if newCount <= maxProvisions {
 		return false, nil
 	}
 
@@ -332,10 +330,10 @@ func (s *server) checkLimitPostgresFallback(ctx context.Context, fp string) (boo
 		slog.Error("postgres fallback count failed — blocking provision", "error", err)
 		return true, nil // fail closed: block if we can't count
 	}
-	return count >= maxProvisionsPerDay, nil
+	return count >= s.cfg.Limits.MaxProvisionsPerDay, nil
 }
 
-func fingerprint(r *http.Request) string {
+func (s *server) fingerprint(r *http.Request) string {
 	ip := clientIP(r)
 	parsed := net.ParseIP(ip)
 	if parsed == nil {
@@ -343,11 +341,11 @@ func fingerprint(r *http.Request) string {
 	}
 	var subnet string
 	if parsed.To4() != nil {
-		mask := net.CIDRMask(24, 32)
-		subnet = parsed.Mask(mask).String() + "/24"
+		mask := net.CIDRMask(s.cfg.Limits.IPv4CIDRPrefix, 32)
+		subnet = fmt.Sprintf("%s/%d", parsed.Mask(mask).String(), s.cfg.Limits.IPv4CIDRPrefix)
 	} else {
-		mask := net.CIDRMask(48, 128)
-		subnet = parsed.Mask(mask).String() + "/48"
+		mask := net.CIDRMask(s.cfg.Limits.IPv6CIDRPrefix, 128)
+		subnet = fmt.Sprintf("%s/%d", parsed.Mask(mask).String(), s.cfg.Limits.IPv6CIDRPrefix)
 	}
 	h := sha256.Sum256([]byte(subnet))
 	return fmt.Sprintf("%x", h)[:16]
