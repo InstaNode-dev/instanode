@@ -47,6 +47,7 @@ func main() {
 	db, err := sql.Open("postgres", cfg.Database.PlatformURL)
 	if err != nil {
 		slog.Error("failed to connect to platform database", "error", err)
+		fmt.Fprintf(os.Stderr, "FATAL: failed to open platform db: %v\n", err)
 		os.Exit(1)
 	}
 	db.SetMaxOpenConns(cfg.Database.MaxOpenConns)
@@ -56,12 +57,14 @@ func main() {
 	defer cancel()
 	if err := db.PingContext(ctx); err != nil {
 		slog.Error("platform database unreachable", "error", err)
+		fmt.Fprintf(os.Stderr, "FATAL: platform database unreachable: %v\n", err)
 		os.Exit(1)
 	}
 
 	opts, err := redis.ParseURL(cfg.Redis.URL)
 	if err != nil {
 		slog.Error("invalid redis url", "url", cfg.Redis.URL, "error", err)
+		fmt.Fprintf(os.Stderr, "FATAL: invalid redis url: %v\n", err)
 		os.Exit(1)
 	}
 	rdb := redis.NewClient(opts)
