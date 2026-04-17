@@ -116,7 +116,7 @@ func main() {
 			http.NotFound(w, r)
 			return
 		}
-		http.Redirect(w, r, "https://instant.dev", http.StatusFound)
+		http.Redirect(w, r, "https://instanode.dev", http.StatusFound)
 	})
 
 	limiter := newIPRateLimiter(cfg.Limits.RateRequestsPerSecond, cfg.Limits.RateBurst)
