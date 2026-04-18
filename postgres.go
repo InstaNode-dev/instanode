@@ -64,7 +64,7 @@ func provisionPostgres(ctx context.Context, custDBURL, token string, cfg *Config
 		newConn.Close()
 	}
 
-	connURL := buildConnURL(custDBURL, dbName, userName, password)
+	connURL := buildConnURL(custDBURL, dbName, userName, password, cfg)
 	return connURL, nil
 }
 
@@ -89,23 +89,54 @@ func randomPassword(length int) string {
 	return hex.EncodeToString(b)[:length]
 }
 
-func buildConnURL(baseURL, dbName, user, password string) string {
-	parts := strings.SplitN(baseURL, "@", 2)
-	if len(parts) != 2 {
-		return fmt.Sprintf("postgres://%s:%s@localhost:5432/%s?sslmode=disable", user, password, dbName)
-	}
-	hostAndDB := parts[1]
-	slashIdx := strings.Index(hostAndDB, "/")
-	host := hostAndDB
-	sslmode := "sslmode=disable"
-	if slashIdx > 0 {
-		host = hostAndDB[:slashIdx]
-		remainder := hostAndDB[slashIdx+1:]
-		if qIdx := strings.Index(remainder, "?"); qIdx >= 0 {
-			sslmode = remainder[qIdx+1:]
+// buildConnURL produces the connection string handed to the customer.
+// The host/port are taken from cfg.Postgres.PublicHost/PublicPort when set
+// — the customer never sees the raw customer-PG IP. sslmode defaults to
+// require (override with cfg.Postgres.RequireTLS=false for local dev).
+func buildConnURL(baseURL, dbName, user, password string, cfg *Config) string {
+	// Fallback host parsed from baseURL (dev mode only).
+	fallbackHost := "localhost:5432"
+	baseQuery := ""
+	if parts := strings.SplitN(baseURL, "@", 2); len(parts) == 2 {
+		hostAndDB := parts[1]
+		if slashIdx := strings.Index(hostAndDB, "/"); slashIdx > 0 {
+			fallbackHost = hostAndDB[:slashIdx]
+			remainder := hostAndDB[slashIdx+1:]
+			if qIdx := strings.Index(remainder, "?"); qIdx >= 0 {
+				baseQuery = remainder[qIdx+1:]
+			}
+		} else {
+			fallbackHost = hostAndDB
 		}
 	}
-	return fmt.Sprintf("postgres://%s:%s@%s/%s?%s", user, password, host, dbName, sslmode)
+
+	host := fallbackHost
+	if cfg != nil && cfg.Postgres.PublicHost != "" {
+		port := cfg.Postgres.PublicPort
+		if port == 0 {
+			port = 5432
+		}
+		host = fmt.Sprintf("%s:%d", cfg.Postgres.PublicHost, port)
+	}
+
+	// sslmode resolution: explicit base-URL query wins; else RequireTLS toggle.
+	query := baseQuery
+	if !strings.Contains(query, "sslmode=") {
+		require := true
+		if cfg != nil && cfg.Postgres.RequireTLS != nil {
+			require = *cfg.Postgres.RequireTLS
+		}
+		mode := "require"
+		if !require {
+			mode = "disable"
+		}
+		if query != "" {
+			query += "&"
+		}
+		query += "sslmode=" + mode
+	}
+
+	return fmt.Sprintf("postgres://%s:%s@%s/%s?%s", user, password, host, dbName, query)
 }
 
 func replaceDBName(baseURL, newDB string) string {

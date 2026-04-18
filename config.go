@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -93,6 +95,20 @@ type ProvisionConfig struct {
 	ConnLimit        int    `yaml:"conn_limit"`
 	StorageMB        int    `yaml:"storage_mb"`
 	StatementTimeout string `yaml:"statement_timeout"`
+	// PublicHost is the hostname (domain) exposed to customers in
+	// connection URLs. The customer never sees the raw PG IP — only
+	// a domain that points to our proxy/bouncer (real PG lives on
+	// a private VPC address). If empty, falls back to the host in
+	// Database.CustomerURL (dev mode only).
+	PublicHost string `yaml:"public_host"`
+	// PublicPort is the TCP port to embed in connection URLs. Defaults
+	// to 5432 when unset. Use this when the proxy/bouncer listens on
+	// a non-default port (e.g. PgBouncer on 6432).
+	PublicPort int `yaml:"public_port"`
+	// RequireTLS forces sslmode=require in generated connection URLs
+	// when no sslmode is present in the base URL. Defaults to true.
+	// Set false only for local dev.
+	RequireTLS *bool `yaml:"require_tls"`
 }
 
 // DefaultConfig returns the configuration with sensible defaults.
@@ -134,6 +150,8 @@ func DefaultConfig() *Config {
 			ConnLimit:        2,
 			StorageMB:        10,
 			StatementTimeout: "30s",
+			PublicPort:       5432,
+			RequireTLS:       boolPtr(true),
 		},
 		Observability: ObservabilityConfig{
 			Enabled:      false,
@@ -226,7 +244,21 @@ func (c *Config) overrideWithEnv() {
 			c.Redis.URL = v
 		}
 	}
+	if v := os.Getenv("POSTGRES_PUBLIC_HOST"); v != "" {
+		c.Postgres.PublicHost = v
+	}
+	if v := os.Getenv("POSTGRES_PUBLIC_PORT"); v != "" {
+		if p, err := strconv.Atoi(v); err == nil {
+			c.Postgres.PublicPort = p
+		}
+	}
+	if v := os.Getenv("POSTGRES_REQUIRE_TLS"); v != "" {
+		b := strings.EqualFold(v, "true") || v == "1"
+		c.Postgres.RequireTLS = &b
+	}
 }
+
+func boolPtr(b bool) *bool { return &b }
 
 // Parsed duration helpers — called once at startup so handlers don't parse repeatedly.
 

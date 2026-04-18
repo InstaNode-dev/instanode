@@ -13,7 +13,9 @@ import (
 
 // startReaper launches a background goroutine that periodically cleans up
 // expired resources: drops Postgres databases, deletes Redis ACL users,
-// and marks resource rows as 'expired'.
+// and marks resource rows as 'expired'. It also enforces storage quotas
+// on active Postgres resources (Postgres has no native per-DB disk quota,
+// so we scan pg_database_size() periodically and lock over-limit DBs).
 func startReaper(db *sql.DB, rdb *redis.Client, cfg *Config, custDBURL string) {
 	interval := cfg.ParsedReaperInterval()
 	go func() {
@@ -23,6 +25,7 @@ func startReaper(db *sql.DB, rdb *redis.Client, cfg *Config, custDBURL string) {
 			timeout := cfg.ParsedReaperTimeout()
 			ctx, cancel := context.WithTimeout(context.Background(), timeout)
 			reapExpired(ctx, db, rdb, cfg, custDBURL)
+			enforceStorageQuota(ctx, db, cfg, custDBURL)
 			cancel()
 		}
 	}()
@@ -77,6 +80,113 @@ func reapExpired(ctx context.Context, db *sql.DB, rdb *redis.Client, cfg *Config
 	if reaped > 0 {
 		slog.Info("reaper: cleaned up expired resources", "count", reaped)
 	}
+}
+
+// enforceStorageQuota scans active Postgres resources and locks any whose
+// on-disk size exceeds the tier's storage_mb cap. Locking = REVOKE CONNECT
+// + pg_terminate_backend + mark status='quota_exceeded'. The DB is not
+// dropped (data preserved so the user can upgrade + keep it); subsequent
+// connection attempts return a permission error.
+//
+// Lag window: up to reaper.Interval of overage. Acceptable for Phase 0.
+// For stronger enforcement, reduce reaper.Interval or move to per-tenant
+// disk isolation (LVM) in a later phase.
+func enforceStorageQuota(ctx context.Context, db *sql.DB, cfg *Config, custDBURL string) {
+	limitMB := cfg.Postgres.StorageMB
+	if limitMB <= 0 {
+		return
+	}
+	limitBytes := int64(limitMB) * 1024 * 1024
+
+	rows, err := db.QueryContext(ctx,
+		`SELECT id, token FROM resources
+		 WHERE status = 'active' AND resource_type = 'postgres'`)
+	if err != nil {
+		slog.Error("reaper: quota scan query failed", "error", err)
+		return
+	}
+	defer rows.Close()
+
+	type target struct {
+		id, token string
+	}
+	var targets []target
+	for rows.Next() {
+		var t target
+		if err := rows.Scan(&t.id, &t.token); err != nil {
+			continue
+		}
+		targets = append(targets, t)
+	}
+	if len(targets) == 0 {
+		return
+	}
+
+	custConn, err := sql.Open("postgres", custDBURL)
+	if err != nil {
+		slog.Error("reaper: quota customer-pg connect failed", "error", err)
+		return
+	}
+	defer custConn.Close()
+
+	var locked int
+	for _, t := range targets {
+		safe := sanitizeToken(t.token)
+		dbName := "db_" + safe
+		var sizeBytes int64
+		err := custConn.QueryRowContext(ctx, `SELECT pg_database_size($1)`, dbName).Scan(&sizeBytes)
+		if err != nil {
+			// Database may have been dropped between SELECT and size query — skip.
+			continue
+		}
+		if sizeBytes <= limitBytes {
+			continue
+		}
+
+		if err := lockOverQuotaDB(ctx, custConn, safe); err != nil {
+			slog.Error("reaper: lock over-quota db failed", "token", t.token, "error", err)
+			continue
+		}
+		if _, err := db.ExecContext(ctx,
+			`UPDATE resources SET status = 'quota_exceeded' WHERE id = $1 AND status = 'active'`, t.id); err != nil {
+			slog.Error("reaper: mark quota_exceeded failed", "id", t.id, "error", err)
+			continue
+		}
+		slog.Warn("reaper: locked over-quota db",
+			"token", t.token, "size_bytes", sizeBytes, "limit_bytes", limitBytes)
+		locked++
+	}
+
+	if locked > 0 {
+		slog.Info("reaper: locked over-quota databases", "count", locked)
+	}
+}
+
+// lockOverQuotaDB revokes CONNECT and terminates active sessions for the
+// owning user. Data is left intact — dropping only happens on TTL expiry
+// via the normal reap path.
+func lockOverQuotaDB(ctx context.Context, conn *sql.DB, safe string) error {
+	dbName := "db_" + safe
+	userName := "usr_" + safe
+	stmts := []string{
+		fmt.Sprintf(`REVOKE CONNECT ON DATABASE %s FROM %s`, dbName, userName),
+		fmt.Sprintf(`REVOKE CONNECT ON DATABASE %s FROM PUBLIC`, dbName),
+	}
+	for _, stmt := range stmts {
+		if _, err := conn.ExecContext(ctx, stmt); err != nil {
+			if strings.Contains(err.Error(), "does not exist") {
+				continue
+			}
+			return fmt.Errorf("exec %q: %w", stmt, err)
+		}
+	}
+	// Kill live sessions so the lock takes effect immediately.
+	if _, err := conn.ExecContext(ctx,
+		`SELECT pg_terminate_backend(pid) FROM pg_stat_activity
+		 WHERE usename = $1 AND pid <> pg_backend_pid()`, userName); err != nil {
+		slog.Warn("reaper: terminate backends failed (advisory)", "user", userName, "error", err)
+	}
+	return nil
 }
 
 func dropPostgresDB(ctx context.Context, custDBURL, safe string) error {

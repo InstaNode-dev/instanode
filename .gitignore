@@ -2,6 +2,8 @@
 .env
 config.prod.yaml
 config.local.yaml
+spec.yaml
 
 # Binary
 instant-lite-api
+lite
