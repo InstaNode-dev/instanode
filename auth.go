@@ -18,6 +18,7 @@ type User struct {
 	GitHubID            int64     `json:"github_id"`
 	Email               string    `json:"email"`
 	RazorpayCustomerID  *string   `json:"razorpay_customer_id"`
+	PlanTier            string    `json:"plan_tier"`
 	CreatedAt           time.Time `json:"created_at"`
 }
 
@@ -61,8 +62,8 @@ func (s *server) getUserFromRequest(r *http.Request) (*User, error) {
 		return nil, err
 	}
 	var user User
-	err = s.db.QueryRow("SELECT id, github_id, email, razorpay_customer_id, created_at FROM users WHERE id = $1", claims.UserID).Scan(
-		&user.ID, &user.GitHubID, &user.Email, &user.RazorpayCustomerID, &user.CreatedAt)
+	err = s.db.QueryRow("SELECT id, github_id, email, razorpay_customer_id, plan_tier, created_at FROM users WHERE id = $1", claims.UserID).Scan(
+		&user.ID, &user.GitHubID, &user.Email, &user.RazorpayCustomerID, &user.PlanTier, &user.CreatedAt)
 	if err != nil {
 		return nil, err
 	}

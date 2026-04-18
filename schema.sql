@@ -8,8 +8,12 @@ CREATE TABLE IF NOT EXISTS users (
     github_id       BIGINT UNIQUE NOT NULL,
     email           TEXT UNIQUE NOT NULL,
     razorpay_customer_id TEXT,
+    plan_tier       TEXT NOT NULL DEFAULT 'free',
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- Additive migration for existing installs (runs every startup, idempotent).
+ALTER TABLE users ADD COLUMN IF NOT EXISTS plan_tier TEXT NOT NULL DEFAULT 'free';
 
 CREATE TABLE IF NOT EXISTS resources (
     id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),

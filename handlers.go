@@ -22,29 +22,43 @@ func (s *server) handleNewDB(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	fp := s.fingerprint(r)
 
-	exceeded, existing := s.checkLimitAndIncrement(ctx, fp, "postgres")
-	if exceeded {
-		if existing != nil {
-			writeJSON(w, http.StatusOK, map[string]any{
-				"ok":             true,
-				"id":             existing.id,
-				"token":          existing.token,
-				"connection_url": existing.connectionURL,
-				"tier":           "anonymous",
-				"limits":         map[string]any{"storage_mb": s.cfg.Postgres.StorageMB, "connections": s.cfg.Postgres.ConnLimit, "expires_in": s.cfg.Limits.AnonTTL},
-				"note":           fmt.Sprintf("Returning your existing database. Keep it forever: %s/start?token=%s", s.baseURL, existing.token),
-			})
-		} else {
-			writeJSON(w, http.StatusTooManyRequests, map[string]any{
-				"ok": false, "error": "rate_limited", "message": fmt.Sprintf("Daily provision limit reached (%d/day). Keep resources forever: %s/start", s.cfg.Limits.MaxProvisionsPerDay, s.baseURL),
-			})
+	// Authenticated paid users skip the per-fingerprint anon cap and get
+	// permanent resources linked to their account automatically.
+	paidUser, _ := s.getUserFromRequest(r)
+	isPaid := paidUser != nil && paidUser.PlanTier == "paid"
+
+	if !isPaid {
+		exceeded, existing := s.checkLimitAndIncrement(ctx, fp, "postgres")
+		if exceeded {
+			if existing != nil {
+				writeJSON(w, http.StatusOK, map[string]any{
+					"ok":             true,
+					"id":             existing.id,
+					"token":          existing.token,
+					"connection_url": existing.connectionURL,
+					"tier":           "anonymous",
+					"limits":         map[string]any{"storage_mb": s.cfg.Postgres.StorageMB, "connections": s.cfg.Postgres.ConnLimit, "expires_in": s.cfg.Limits.AnonTTL},
+					"note":           fmt.Sprintf("Returning your existing database. Keep it forever: %s/start?token=%s", s.baseURL, existing.token),
+				})
+			} else {
+				writeJSON(w, http.StatusTooManyRequests, map[string]any{
+					"ok": false, "error": "rate_limited", "message": fmt.Sprintf("Daily provision limit reached (%d/day). Keep resources forever: %s/start", s.cfg.Limits.MaxProvisionsPerDay, s.baseURL),
+				})
+			}
+			return
 		}
-		return
 	}
 
 	token := uuid.New()
 	anonTTL := s.cfg.ParsedAnonTTL()
-	expiresAt := time.Now().UTC().Add(anonTTL)
+	var expiresAt *time.Time
+	tier := "anonymous"
+	if isPaid {
+		tier = "paid"
+	} else {
+		t := time.Now().UTC().Add(anonTTL)
+		expiresAt = &t
+	}
 
 	connURL, err := provisionPostgres(ctx, s.custDBURL, token.String(), s.cfg)
 	if err != nil {
@@ -56,10 +70,17 @@ func (s *server) handleNewDB(w http.ResponseWriter, r *http.Request) {
 	}
 
 	id := uuid.New()
-	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO resources (id, token, resource_type, tier, fingerprint, connection_url, expires_at)
-		 VALUES ($1, $2, 'postgres', 'anonymous', $3, $4, $5)`,
-		id, token, fp, connURL, expiresAt)
+	if isPaid {
+		_, err = s.db.ExecContext(ctx,
+			`INSERT INTO resources (id, token, resource_type, tier, fingerprint, connection_url, expires_at, migrated_to_user_id)
+			 VALUES ($1, $2, 'postgres', 'paid', $3, $4, NULL, $5)`,
+			id, token, fp, connURL, paidUser.ID)
+	} else {
+		_, err = s.db.ExecContext(ctx,
+			`INSERT INTO resources (id, token, resource_type, tier, fingerprint, connection_url, expires_at)
+			 VALUES ($1, $2, 'postgres', 'anonymous', $3, $4, $5)`,
+			id, token, fp, connURL, expiresAt)
+	}
 	if err != nil {
 		slog.ErrorContext(ctx, "db resource insert failed", "error", err)
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
@@ -68,17 +89,23 @@ func (s *server) handleNewDB(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	slog.InfoContext(ctx, "provision.success", "service", "postgres", "token", token.String(), "fingerprint", fp)
+	slog.InfoContext(ctx, "provision.success", "service", "postgres", "token", token.String(), "fingerprint", fp, "tier", tier)
 
-	writeJSON(w, http.StatusCreated, map[string]any{
+	resp := map[string]any{
 		"ok":             true,
 		"id":             id.String(),
 		"token":          token.String(),
 		"connection_url": connURL,
-		"tier":           "anonymous",
-		"limits":         map[string]any{"storage_mb": s.cfg.Postgres.StorageMB, "connections": s.cfg.Postgres.ConnLimit, "expires_in": s.cfg.Limits.AnonTTL},
-		"note":           fmt.Sprintf("Works now. Keep it forever (free 14-day trial): %s/start?token=%s", s.baseURL, token.String()),
-	})
+		"tier":           tier,
+		"limits":         map[string]any{"storage_mb": s.cfg.Postgres.StorageMB, "connections": s.cfg.Postgres.ConnLimit},
+	}
+	if isPaid {
+		resp["note"] = "Permanent database (Developer tier). Manage it at " + s.baseURL + "/dashboard.html"
+	} else {
+		resp["limits"].(map[string]any)["expires_in"] = s.cfg.Limits.AnonTTL
+		resp["note"] = fmt.Sprintf("Works now. Keep it forever (free 14-day trial): %s/start?token=%s", s.baseURL, token.String())
+	}
+	writeJSON(w, http.StatusCreated, resp)
 }
 
 // ── POST /webhook/new ───────────────────────────────────────────────────────

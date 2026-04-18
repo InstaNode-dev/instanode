@@ -217,6 +217,15 @@ func (s *server) handlePaymentCaptured(entity map[string]interface{}, paymentID 
 		return
 	}
 
+	// Promote the user's account tier first (independent of whether the
+	// payment entity carried a customer_id — in test mode it often doesn't).
+	if _, err := s.db.Exec(
+		"UPDATE users SET plan_tier = 'paid' WHERE id = $1",
+		userID,
+	); err != nil {
+		slog.Error("failed to promote user plan_tier", "error", err, "user_id", userID)
+	}
+
 	if customerID != "" {
 		if _, err := s.db.Exec(
 			"UPDATE users SET razorpay_customer_id = $1 WHERE id = $2",
