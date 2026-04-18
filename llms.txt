@@ -12,26 +12,30 @@ Import this URL into any OpenAPI-aware tool, MCP server, or agent framework.
 
 ## Quick start
 
-Provision a Postgres database (no account, no API key):
+Provision a Postgres database (no account, no API key — `name` is required):
 ```
-curl -s -X POST https://instanode.dev/db/new | jq
+curl -s -X POST https://instanode.dev/db/new \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"my-side-project"}' | jq
 ```
 
 Provision a webhook receiver:
 ```
-curl -s -X POST https://instanode.dev/webhook/new | jq
+curl -s -X POST https://instanode.dev/webhook/new \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"github-webhook"}' | jq
 ```
 
 ## Endpoints
 
 ### POST /db/new
-Provision a Postgres database with pgvector.
-Returns `connection_url` (standard postgres:// URL), `token`, `tier`, `limits`.
+Provision a Postgres database with pgvector. Body: `{"name":"<label>"}` — required.
+Returns `connection_url` (standard postgres:// URL), `token`, `name`, `tier`, `limits`.
 Anonymous tier: 10MB storage, 2 connections, expires in 24h.
 
 ### POST /webhook/new
-Provision a webhook receiver.
-Returns `receive_url`, `token`, `tier`, `limits`, `expires_at`.
+Provision a webhook receiver. Body: `{"name":"<label>"}` — required.
+Returns `receive_url`, `token`, `name`, `tier`, `limits`, `expires_at`.
 POST any payload to `receive_url` to store it. Anonymous: 100 stored, expires 24h.
 
 ### POST /webhook/receive/{token}

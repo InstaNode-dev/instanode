@@ -53,8 +53,16 @@
       "post": {
         "tags": ["provisioning"],
         "summary": "Provision a Postgres database",
-        "description": "Creates a fresh Postgres database with pgvector. No account or API key required. Request body is ignored. The first 5 provisions per IP subnet per day create new resources; subsequent calls return the most recently created resource for that subnet.",
+        "description": "Creates a fresh Postgres database with pgvector. `name` is required — it's the human label surfaced in the dashboard. Anonymous callers (no session cookie) get 5 provisions/subnet/day and 24h-TTL resources. Authenticated paid users get permanent resources with no per-subnet cap.",
         "operationId": "newDB",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {"$ref": "#/components/schemas/ProvisionRequest"}
+            }
+          }
+        },
         "responses": {
           "201": {
             "description": "A new database was provisioned.",
@@ -95,8 +103,16 @@
       "post": {
         "tags": ["provisioning"],
         "summary": "Provision a webhook receiver",
-        "description": "Returns a `receive_url` that accepts arbitrary payloads. Stored requests can be retrieved via a dashboard (or directly from Redis if self-hosting). Request body is ignored.",
+        "description": "Returns a `receive_url` that accepts arbitrary payloads. `name` is required — it's the human label surfaced in the dashboard.",
         "operationId": "newWebhook",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {"$ref": "#/components/schemas/ProvisionRequest"}
+            }
+          }
+        },
         "responses": {
           "201": {
             "description": "A new webhook receiver was provisioned.",
@@ -516,14 +532,23 @@
           "expires_in":      {"type": "string", "example": "24h"}
         }
       },
+      "ProvisionRequest": {
+        "type": "object",
+        "description": "Minimal body accepted by every provisioning endpoint.",
+        "required": ["name"],
+        "properties": {
+          "name": {"type": "string", "minLength": 1, "maxLength": 64, "example": "my-side-project", "description": "Human label; shown in the dashboard. Required."}
+        }
+      },
       "ProvisionResponse": {
         "type": "object",
         "description": "Postgres provisioning response.",
-        "required": ["ok", "id", "token", "connection_url", "tier", "limits", "note"],
+        "required": ["ok", "id", "token", "name", "connection_url", "tier", "limits", "note"],
         "properties": {
           "ok":             {"type": "boolean"},
           "id":             {"type": "string", "format": "uuid"},
           "token":          {"type": "string", "format": "uuid", "description": "Opaque token used to claim the resource later."},
+          "name":           {"type": "string", "description": "The label supplied in the request body."},
           "connection_url": {"type": "string", "example": "postgres://user:pass@host:5432/dbname", "description": "Standard Postgres URL; usable with every driver."},
           "tier":           {"$ref": "#/components/schemas/Tier"},
           "limits":         {"$ref": "#/components/schemas/PostgresLimits"},
@@ -533,11 +558,12 @@
       "WebhookProvisionResponse": {
         "type": "object",
         "description": "Webhook receiver provisioning response.",
-        "required": ["ok", "id", "token", "receive_url", "tier", "limits", "note"],
+        "required": ["ok", "id", "token", "name", "receive_url", "tier", "limits", "note"],
         "properties": {
           "ok":          {"type": "boolean"},
           "id":          {"type": "string", "format": "uuid"},
           "token":       {"type": "string", "format": "uuid"},
+          "name":        {"type": "string"},
           "receive_url": {"type": "string", "format": "uri", "example": "https://api.instanode.dev/webhook/receive/9b0e..."},
           "tier":        {"$ref": "#/components/schemas/Tier"},
           "expires_at":  {"type": "string", "format": "date-time"},

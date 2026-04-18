@@ -18,9 +18,48 @@ import (
 
 // ── POST /db/new ────────────────────────────────────────────────────────────
 
+// provisionRequest is the minimal JSON body accepted by every /{service}/new
+// endpoint. Name is required — a human label the owner will see in the
+// dashboard and in the upgrade URL.
+type provisionRequest struct {
+	Name string `json:"name"`
+}
+
+// parseProvisionRequest reads the JSON body (empty body tolerated) and
+// validates the name. Returns a 400-ready error string when invalid.
+func parseProvisionRequest(r *http.Request) (string, string) {
+	var req provisionRequest
+	if r.Body != nil {
+		// Ignore decode errors on empty/invalid body — we'll error below
+		// on the missing name.
+		_ = json.NewDecoder(r.Body).Decode(&req)
+	}
+	name := strings.TrimSpace(req.Name)
+	if name == "" {
+		return "", "name is required: include {\"name\":\"<label>\"} in the JSON body"
+	}
+	if len(name) > 64 {
+		return "", "name must be 64 characters or fewer"
+	}
+	for _, c := range name {
+		if c < 0x20 || c == 0x7f {
+			return "", "name must not contain control characters"
+		}
+	}
+	return name, ""
+}
+
 func (s *server) handleNewDB(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	fp := s.fingerprint(r)
+
+	name, errMsg := parseProvisionRequest(r)
+	if errMsg != "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"ok": false, "error": "name_required", "message": errMsg,
+		})
+		return
+	}
 
 	// Authenticated paid users skip the per-fingerprint anon cap and get
 	// permanent resources linked to their account automatically.
@@ -72,14 +111,14 @@ func (s *server) handleNewDB(w http.ResponseWriter, r *http.Request) {
 	id := uuid.New()
 	if isPaid {
 		_, err = s.db.ExecContext(ctx,
-			`INSERT INTO resources (id, token, resource_type, tier, fingerprint, connection_url, expires_at, migrated_to_user_id)
-			 VALUES ($1, $2, 'postgres', 'paid', $3, $4, NULL, $5)`,
-			id, token, fp, connURL, paidUser.ID)
+			`INSERT INTO resources (id, token, resource_type, name, tier, fingerprint, connection_url, expires_at, migrated_to_user_id)
+			 VALUES ($1, $2, 'postgres', $3, 'paid', $4, $5, NULL, $6)`,
+			id, token, name, fp, connURL, paidUser.ID)
 	} else {
 		_, err = s.db.ExecContext(ctx,
-			`INSERT INTO resources (id, token, resource_type, tier, fingerprint, connection_url, expires_at)
-			 VALUES ($1, $2, 'postgres', 'anonymous', $3, $4, $5)`,
-			id, token, fp, connURL, expiresAt)
+			`INSERT INTO resources (id, token, resource_type, name, tier, fingerprint, connection_url, expires_at)
+			 VALUES ($1, $2, 'postgres', $3, 'anonymous', $4, $5, $6)`,
+			id, token, name, fp, connURL, expiresAt)
 	}
 	if err != nil {
 		slog.ErrorContext(ctx, "db resource insert failed", "error", err)
@@ -95,6 +134,7 @@ func (s *server) handleNewDB(w http.ResponseWriter, r *http.Request) {
 		"ok":             true,
 		"id":             id.String(),
 		"token":          token.String(),
+		"name":           name,
 		"connection_url": connURL,
 		"tier":           tier,
 		"limits":         map[string]any{"storage_mb": s.cfg.Postgres.StorageMB, "connections": s.cfg.Postgres.ConnLimit},
@@ -114,36 +154,64 @@ func (s *server) handleNewWebhook(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	fp := s.fingerprint(r)
 
-	exceeded, existing := s.checkLimitAndIncrement(ctx, fp, "webhook")
-	if exceeded {
-		if existing != nil {
-			writeJSON(w, http.StatusOK, map[string]any{
-				"ok":          true,
-				"id":          existing.id,
-				"token":       existing.token,
-				"receive_url": existing.connectionURL,
-				"tier":        "anonymous",
-				"limits":      map[string]any{"requests_stored": s.cfg.Limits.WebhookMaxStored, "expires_in": s.cfg.Limits.AnonTTL},
-				"note":        "Returning your existing webhook. Keep it forever: " + s.baseURL + "/start",
-			})
-		} else {
-			writeJSON(w, http.StatusTooManyRequests, map[string]any{
-				"ok": false, "error": "rate_limited", "message": fmt.Sprintf("Daily provision limit reached (%d/day). Keep resources forever: %s/start", s.cfg.Limits.MaxProvisionsPerDay, s.baseURL),
-			})
-		}
+	name, errMsg := parseProvisionRequest(r)
+	if errMsg != "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"ok": false, "error": "name_required", "message": errMsg,
+		})
 		return
+	}
+
+	paidUser, _ := s.getUserFromRequest(r)
+	isPaid := paidUser != nil && paidUser.PlanTier == "paid"
+
+	if !isPaid {
+		exceeded, existing := s.checkLimitAndIncrement(ctx, fp, "webhook")
+		if exceeded {
+			if existing != nil {
+				writeJSON(w, http.StatusOK, map[string]any{
+					"ok":          true,
+					"id":          existing.id,
+					"token":       existing.token,
+					"receive_url": existing.connectionURL,
+					"tier":        "anonymous",
+					"limits":      map[string]any{"requests_stored": s.cfg.Limits.WebhookMaxStored, "expires_in": s.cfg.Limits.AnonTTL},
+					"note":        "Returning your existing webhook. Keep it forever: " + s.baseURL + "/start",
+				})
+			} else {
+				writeJSON(w, http.StatusTooManyRequests, map[string]any{
+					"ok": false, "error": "rate_limited", "message": fmt.Sprintf("Daily provision limit reached (%d/day). Keep resources forever: %s/start", s.cfg.Limits.MaxProvisionsPerDay, s.baseURL),
+				})
+			}
+			return
+		}
 	}
 
 	token := uuid.New()
 	anonTTL := s.cfg.ParsedAnonTTL()
-	expiresAt := time.Now().UTC().Add(anonTTL)
+	var expiresAt *time.Time
+	tier := "anonymous"
+	if isPaid {
+		tier = "paid"
+	} else {
+		t := time.Now().UTC().Add(anonTTL)
+		expiresAt = &t
+	}
 	receiveURL := fmt.Sprintf("%s/webhook/receive/%s", s.baseURL, token.String())
 
 	id := uuid.New()
-	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO resources (id, token, resource_type, tier, fingerprint, connection_url, expires_at)
-		 VALUES ($1, $2, 'webhook', 'anonymous', $3, $4, $5)`,
-		id, token, fp, receiveURL, expiresAt)
+	var err error
+	if isPaid {
+		_, err = s.db.ExecContext(ctx,
+			`INSERT INTO resources (id, token, resource_type, name, tier, fingerprint, connection_url, expires_at, migrated_to_user_id)
+			 VALUES ($1, $2, 'webhook', $3, 'paid', $4, $5, NULL, $6)`,
+			id, token, name, fp, receiveURL, paidUser.ID)
+	} else {
+		_, err = s.db.ExecContext(ctx,
+			`INSERT INTO resources (id, token, resource_type, name, tier, fingerprint, connection_url, expires_at)
+			 VALUES ($1, $2, 'webhook', $3, 'anonymous', $4, $5, $6)`,
+			id, token, name, fp, receiveURL, expiresAt)
+	}
 	if err != nil {
 		slog.ErrorContext(ctx, "webhook resource insert failed", "error", err)
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
@@ -152,18 +220,25 @@ func (s *server) handleNewWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	slog.InfoContext(ctx, "provision.success", "service", "webhook", "token", token.String(), "fingerprint", fp)
+	slog.InfoContext(ctx, "provision.success", "service", "webhook", "token", token.String(), "fingerprint", fp, "tier", tier)
 
-	writeJSON(w, http.StatusCreated, map[string]any{
+	resp := map[string]any{
 		"ok":          true,
 		"id":          id.String(),
 		"token":       token.String(),
+		"name":        name,
 		"receive_url": receiveURL,
-		"tier":        "anonymous",
-		"expires_at":  expiresAt,
-		"limits":      map[string]any{"requests_stored": s.cfg.Limits.WebhookMaxStored, "expires_in": s.cfg.Limits.AnonTTL},
-		"note":        fmt.Sprintf("Works now. Keep it forever (free 14-day trial): %s/start", s.baseURL),
-	})
+		"tier":        tier,
+		"limits":      map[string]any{"requests_stored": s.cfg.Limits.WebhookMaxStored},
+	}
+	if isPaid {
+		resp["note"] = "Permanent webhook (Developer tier). Manage it at " + s.baseURL + "/dashboard.html"
+	} else {
+		resp["expires_at"] = expiresAt
+		resp["limits"].(map[string]any)["expires_in"] = s.cfg.Limits.AnonTTL
+		resp["note"] = fmt.Sprintf("Works now. Keep it forever (free 14-day trial): %s/start", s.baseURL)
+	}
+	writeJSON(w, http.StatusCreated, resp)
 }
 
 // ── POST /webhook/receive/:token ────────────────────────────────────────────
