@@ -113,6 +113,26 @@ func main() {
 	mux.HandleFunc("POST /webhook/receive/{token}", s.handleWebhookReceive)
 	mux.HandleFunc("GET /webhook/receive/{token}", s.handleWebhookReceive)
 
+	// Auth endpoints
+	mux.HandleFunc("GET /auth/github/login", s.handleGitHubLogin)
+	mux.HandleFunc("GET /auth/github/callback", s.handleGitHubCallback)
+	mux.HandleFunc("POST /auth/logout", s.handleLogout)
+	mux.HandleFunc("GET /auth/me", s.handleMe)
+
+	// Billing endpoints
+	mux.HandleFunc("POST /billing/create-order", s.handleCreateOrder)
+	mux.HandleFunc("POST /webhooks/razorpay", s.handleRazorpayWebhook)
+	mux.HandleFunc("POST /billing/migrate", s.handleMigrateResource)
+
+	// Dashboard endpoints
+	mux.HandleFunc("GET /api/me/resources", s.handleGetResources)
+	mux.HandleFunc("GET /dashboard", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "https://instanode.dev/dashboard", http.StatusFound)
+	})
+	mux.HandleFunc("GET /pricing", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "https://instanode.dev/pricing", http.StatusFound)
+	})
+
 	// Health
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "service": "instant-lite"})
@@ -126,11 +146,16 @@ func main() {
 
 	// Root — redirect to website (hosted separately on GitHub Pages).
 	mux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/" {
-			http.NotFound(w, r)
+		if r.URL.Path == "/" {
+			http.Redirect(w, r, "https://instanode.dev", http.StatusFound)
 			return
 		}
-		http.Redirect(w, r, "https://instanode.dev", http.StatusFound)
+		if r.URL.Path == "/start" {
+			// Serve the start page or redirect to frontend
+			http.Redirect(w, r, "https://instanode.dev/start" + r.URL.RawQuery, http.StatusFound)
+			return
+		}
+		http.NotFound(w, r)
 	})
 
 	limiter := newIPRateLimiter(cfg.Limits.RateRequestsPerSecond, cfg.Limits.RateBurst)

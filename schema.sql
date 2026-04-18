@@ -3,6 +3,14 @@
 
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
+CREATE TABLE IF NOT EXISTS users (
+    id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    github_id       BIGINT UNIQUE NOT NULL,
+    email           TEXT UNIQUE NOT NULL,
+    razorpay_customer_id TEXT,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 CREATE TABLE IF NOT EXISTS resources (
     id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     token           UUID NOT NULL UNIQUE DEFAULT uuid_generate_v4(),
@@ -14,6 +22,7 @@ CREATE TABLE IF NOT EXISTS resources (
     connection_url  TEXT NOT NULL DEFAULT '',
     key_prefix      TEXT NOT NULL DEFAULT '',
     expires_at      TIMESTAMPTZ,
+    migrated_to_user_id UUID REFERENCES users(id),
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 

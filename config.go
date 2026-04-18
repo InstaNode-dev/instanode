@@ -16,6 +16,9 @@ type Config struct {
 	Server        ServerConfig        `yaml:"server"`
 	Database      DatabaseConfig      `yaml:"database"`
 	Redis         RedisConfig         `yaml:"redis"`
+	GitHub        GitHubConfig        `yaml:"github"`
+	Razorpay      RazorpayConfig      `yaml:"razorpay"`
+	JWT           JWTConfig           `yaml:"jwt"`
 	Limits        LimitsConfig        `yaml:"limits"`
 	Reaper        ReaperConfig        `yaml:"reaper"`
 	Postgres      ProvisionConfig     `yaml:"postgres"`
@@ -50,6 +53,22 @@ type DatabaseConfig struct {
 
 type RedisConfig struct {
 	URL string `yaml:"url"`
+}
+
+type GitHubConfig struct {
+	ClientID     string `yaml:"client_id"`
+	ClientSecret string `yaml:"client_secret"`
+	RedirectURI  string `yaml:"redirect_uri"`
+}
+
+type RazorpayConfig struct {
+	KeyID         string `yaml:"key_id"`
+	KeySecret     string `yaml:"key_secret"`
+	WebhookSecret string `yaml:"webhook_secret"`
+}
+
+type JWTConfig struct {
+	Secret string `yaml:"secret"`
 }
 
 type LimitsConfig struct {
@@ -145,6 +164,9 @@ func LoadConfig(path string) *Config {
 		slog.Info("config: loaded from file", "path", path)
 	}
 
+	// Override with environment variables for secrets
+	cfg.overrideWithEnv()
+
 	// Derived defaults.
 	if cfg.Server.BaseURL == "" {
 		cfg.Server.BaseURL = "http://localhost:" + cfg.Server.Port
@@ -154,6 +176,50 @@ func LoadConfig(path string) *Config {
 	}
 
 	return cfg
+}
+
+// overrideWithEnv overrides config values with environment variables for secrets if not set in config
+func (c *Config) overrideWithEnv() {
+	if c.GitHub.ClientID == "" {
+		if v := os.Getenv("GITHUB_CLIENT_ID"); v != "" {
+			c.GitHub.ClientID = v
+		}
+	}
+	if c.GitHub.ClientSecret == "" {
+		if v := os.Getenv("GITHUB_CLIENT_SECRET"); v != "" {
+			c.GitHub.ClientSecret = v
+		}
+	}
+	if c.Razorpay.KeyID == "" {
+		if v := os.Getenv("RAZORPAY_KEY_ID"); v != "" {
+			c.Razorpay.KeyID = v
+		}
+	}
+	if c.Razorpay.KeySecret == "" {
+		if v := os.Getenv("RAZORPAY_KEY_SECRET"); v != "" {
+			c.Razorpay.KeySecret = v
+		}
+	}
+	if c.Razorpay.WebhookSecret == "" {
+		if v := os.Getenv("RAZORPAY_WEBHOOK_SECRET"); v != "" {
+			c.Razorpay.WebhookSecret = v
+		}
+	}
+	if c.JWT.Secret == "" {
+		if v := os.Getenv("JWT_SECRET"); v != "" {
+			c.JWT.Secret = v
+		}
+	}
+	if c.Database.PlatformURL == "" {
+		if v := os.Getenv("DATABASE_URL"); v != "" {
+			c.Database.PlatformURL = v
+		}
+	}
+	if c.Redis.URL == "" {
+		if v := os.Getenv("REDIS_URL"); v != "" {
+			c.Redis.URL = v
+		}
+	}
 }
 
 // Parsed duration helpers — called once at startup so handlers don't parse repeatedly.
