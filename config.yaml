@@ -11,7 +11,7 @@ server:
 
 database:
   platform_url: "postgresql://doadmin:***REDACTED-DO-PG-DOADMIN***@instanode-platform-do-user-36074563-0.d.db.ondigitalocean.com:25060/defaultdb?sslmode=require"
-  customer_url: ""              # Falls back to platform_url if empty
+  customer_url: ""              # REQUIRED: separate customer DB connection string via CUSTOMER_DATABASE_URL
   max_open_conns: 20
   max_idle_conns: 5
 

@@ -172,7 +172,8 @@ func LoadConfig(path string) *Config {
 		cfg.Server.BaseURL = "http://localhost:" + cfg.Server.Port
 	}
 	if cfg.Database.CustomerURL == "" {
-		cfg.Database.CustomerURL = cfg.Database.PlatformURL
+		slog.Error("config: customer_url is required and must not fall back to platform_url")
+		os.Exit(1)
 	}
 
 	return cfg
@@ -210,9 +211,14 @@ func (c *Config) overrideWithEnv() {
 			c.JWT.Secret = v
 		}
 	}
-	if c.Database.PlatformURL == "" {
+		if c.Database.PlatformURL == "" {
 		if v := os.Getenv("DATABASE_URL"); v != "" {
 			c.Database.PlatformURL = v
+		}
+	}
+	if c.Database.CustomerURL == "" {
+		if v := os.Getenv("CUSTOMER_DATABASE_URL"); v != "" {
+			c.Database.CustomerURL = v
 		}
 	}
 	if c.Redis.URL == "" {
