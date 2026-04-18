@@ -126,6 +126,7 @@ func main() {
 
 	// Dashboard endpoints
 	mux.HandleFunc("GET /api/me/resources", s.handleGetResources)
+	mux.HandleFunc("POST /api/me/claim", s.handleClaimToken)
 	mux.HandleFunc("GET /dashboard", func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "https://instanode.dev/dashboard", http.StatusFound)
 	})

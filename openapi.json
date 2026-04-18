@@ -445,6 +445,56 @@
         }
       }
     },
+    "/api/me/claim": {
+      "post": {
+        "tags": ["dashboard"],
+        "summary": "Claim an existing token into the authenticated account",
+        "description": "Attaches an anonymous resource (previously provisioned via /db/new or /webhook/new) to the authenticated user. Works with either a session cookie or `Authorization: Bearer <JWT>` so CLIs and agents can claim from any runtime. Idempotent when the resource already belongs to the caller.",
+        "operationId": "claimToken",
+        "security": [{"sessionCookie": []}, {"bearerAuth": []}],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["token"],
+                "properties": {
+                  "token": {"type": "string", "format": "uuid", "description": "The token returned from /db/new or /webhook/new."}
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Resource now belongs to the caller. Paid users additionally get tier='paid' and expires_at=NULL.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["ok", "id", "token", "resource_type", "tier", "status"],
+                  "properties": {
+                    "ok":            {"type": "boolean"},
+                    "id":            {"type": "string", "format": "uuid"},
+                    "token":         {"type": "string", "format": "uuid"},
+                    "resource_type": {"type": "string"},
+                    "name":          {"type": "string"},
+                    "tier":          {"$ref": "#/components/schemas/Tier"},
+                    "status":        {"type": "string"}
+                  }
+                }
+              }
+            }
+          },
+          "400": {"description": "Missing or malformed token."},
+          "401": {"description": "No session cookie and no valid bearer token."},
+          "404": {"description": "Token not found or belongs to another account."},
+          "410": {"description": "Resource has already expired."},
+          "500": {"description": "Database error."}
+        }
+      }
+    },
     "/llms.txt": {
       "get": {
         "tags": ["meta"],
@@ -483,6 +533,12 @@
         "in": "cookie",
         "name": "session",
         "description": "HttpOnly JWT set by `GET /auth/github/callback`."
+      },
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "Same JWT as the session cookie, passed as `Authorization: Bearer <token>` for CLI / agent callers."
       }
     },
     "schemas": {

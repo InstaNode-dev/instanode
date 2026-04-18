@@ -45,6 +45,12 @@ Returns `{ "ok": true, "id": "<request-id>" }`.
 ### GET /healthz
 Returns `{ "ok": true, "service": "instant-lite" }`.
 
+### POST /api/me/claim
+Attach an existing token to your account. Works with a session cookie OR
+`Authorization: Bearer <JWT>` so CLIs / agents can claim too. Body:
+`{"token":"<uuid>"}`. Paid users get tier='paid' + no expiry automatically.
+Idempotent — re-claiming your own token returns the same 200 payload.
+
 ## Response shape (all provisioning endpoints)
 
 ```json
