@@ -61,6 +61,7 @@ func main() {
 	if err := db.PingContext(ctx); err != nil {
 		slog.Error("platform database unreachable", "error", err)
 		fmt.Fprintf(os.Stderr, "FATAL: platform database unreachable: %v\n", err)
+		time.Sleep(2 * time.Second)
 		os.Exit(1)
 	}
 
@@ -68,6 +69,7 @@ func main() {
 	if _, err := db.ExecContext(ctx, schemaSQL); err != nil {
 		slog.Error("platform database schema init failed", "error", err)
 		fmt.Fprintf(os.Stderr, "FATAL: schema init failed: %v\n", err)
+		time.Sleep(2 * time.Second)
 		os.Exit(1)
 	}
 
