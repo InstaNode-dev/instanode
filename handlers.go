@@ -32,7 +32,7 @@ func (s *server) handleNewDB(w http.ResponseWriter, r *http.Request) {
 				"connection_url": existing.connectionURL,
 				"tier":           "anonymous",
 				"limits":         map[string]any{"storage_mb": s.cfg.Postgres.StorageMB, "connections": s.cfg.Postgres.ConnLimit, "expires_in": s.cfg.Limits.AnonTTL},
-				"note":           "Returning your existing database. Keep it forever: " + s.baseURL + "/start",
+				"note":           fmt.Sprintf("Returning your existing database. Keep it forever: %s/start?token=%s", s.baseURL, existing.token),
 			})
 		} else {
 			writeJSON(w, http.StatusTooManyRequests, map[string]any{
@@ -77,7 +77,7 @@ func (s *server) handleNewDB(w http.ResponseWriter, r *http.Request) {
 		"connection_url": connURL,
 		"tier":           "anonymous",
 		"limits":         map[string]any{"storage_mb": s.cfg.Postgres.StorageMB, "connections": s.cfg.Postgres.ConnLimit, "expires_in": s.cfg.Limits.AnonTTL},
-		"note":           fmt.Sprintf("Works now. Keep it forever (free 14-day trial): %s/start", s.baseURL),
+		"note":           fmt.Sprintf("Works now. Keep it forever (free 14-day trial): %s/start?token=%s", s.baseURL, token.String()),
 	})
 }
 
@@ -97,7 +97,7 @@ func (s *server) handleNewCache(w http.ResponseWriter, r *http.Request) {
 				"connection_url": existing.connectionURL,
 				"tier":           "anonymous",
 				"limits":         map[string]any{"memory_mb": 5, "expires_in": s.cfg.Limits.AnonTTL},
-				"note":           "Returning your existing cache. Keep it forever: " + s.baseURL + "/start",
+				"note":           fmt.Sprintf("Returning your existing cache. Keep it forever: %s/start?token=%s", s.baseURL, existing.token),
 			}
 			if existing.keyPrefix != "" {
 				resp["key_prefix"] = existing.keyPrefix
