@@ -64,7 +64,13 @@ Returns `{ "ok": true, "service": "instant-lite" }`.
 | Tier | Price | Postgres | Webhooks | Expiry |
 |------|-------|----------|----------|--------|
 | Free | $0 | 10MB / 2 conn | 100 stored | 24h |
-| Developer | $12/mo | 500MB / 5 conn | 1000 stored | Never |
+| Developer (monthly) | $12/mo | 500MB / 5 conn | 1000 stored | Never |
+| Developer (annual)  | $120/yr | 500MB / 5 conn | 1000 stored | Never |
+
+Annual plan is the monthly plan billed once a year at a 17% discount
+(two months free). Both unlock the same feature set.
+
+Checkout `plan_id` values: `developer` (monthly), `developer-annual` (yearly).
 
 ## No authentication required
 

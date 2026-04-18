@@ -30,13 +30,20 @@ type CreateOrderResponse struct {
 }
 
 // planPricing holds minor-unit amounts (cents / paise) per currency.
-// $12/mo = 1200 cents; INR is priced at ~₹999 (99900 paise).
+// Monthly Developer: $12. Annual Developer: $120 (two months free).
+// INR prices mirror the USD ratio — ₹999/mo and ₹9,990/yr.
 var planPricing = map[string]map[string]int{
 	"developer": {
 		"USD": 1200,
 		"EUR": 1200,
 		"GBP": 1200,
 		"INR": 99900,
+	},
+	"developer-annual": {
+		"USD": 12000,
+		"EUR": 12000,
+		"GBP": 12000,
+		"INR": 999000,
 	},
 }
 
