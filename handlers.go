@@ -62,8 +62,10 @@ func (s *server) handleNewDB(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Authenticated paid users skip the per-fingerprint anon cap and get
-	// permanent resources linked to their account automatically.
-	paidUser, _ := s.getUserFromRequest(r)
+	// permanent resources linked to their account automatically. Accepts
+	// session cookie (from the browser) or Authorization: Bearer <JWT>
+	// (from CLI / agents).
+	paidUser := s.authUser(r)
 	isPaid := paidUser != nil && paidUser.PlanTier == "paid"
 
 	if !isPaid {
@@ -162,7 +164,7 @@ func (s *server) handleNewWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	paidUser, _ := s.getUserFromRequest(r)
+	paidUser := s.authUser(r)
 	isPaid := paidUser != nil && paidUser.PlanTier == "paid"
 
 	if !isPaid {

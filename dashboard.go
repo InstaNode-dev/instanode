@@ -54,6 +54,31 @@ func (s *server) handleGetResources(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(resources)
 }
 
+// ── GET /api/me/token ───────────────────────────────────────────────────────
+//
+// Returns a freshly-signed JWT the user can paste into `Authorization: Bearer …`
+// for CLI / agent calls against /db/new, /webhook/new, and /api/me/claim.
+// The token is the same shape as the session cookie (30-day TTL), so
+// rotating JWT_SECRET revokes every outstanding key.
+func (s *server) handleGetAPIToken(w http.ResponseWriter, r *http.Request) {
+	user := s.authUser(r)
+	if user == nil {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "Sign in required.")
+		return
+	}
+	tok, err := s.generateJWT(user.ID)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "token: generate failed", "error", err, "user_id", user.ID)
+		writeError(w, http.StatusInternalServerError, "internal_error", "Could not mint a token — please retry.")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":         true,
+		"token":      tok,
+		"expires_in": int(jwtTTL.Seconds()),
+	})
+}
+
 // ── POST /api/me/claim ──────────────────────────────────────────────────────
 //
 // Attach an anonymous resource to the authenticated user's account. Accepts a
@@ -71,26 +96,8 @@ type claimRequest struct {
 }
 
 func (s *server) handleClaimToken(w http.ResponseWriter, r *http.Request) {
-	user, err := s.getUserFromRequest(r)
-	if err != nil {
-		// Fall back to Authorization: Bearer <JWT> for API / CLI callers.
-		authz := r.Header.Get("Authorization")
-		if strings.HasPrefix(authz, "Bearer ") {
-			claims, perr := s.parseJWT(strings.TrimPrefix(authz, "Bearer "))
-			if perr == nil {
-				var u User
-				if qerr := s.db.QueryRow(
-					`SELECT id, github_id, email, razorpay_customer_id, plan_tier, plan_period, plan_paid_at, created_at
-					 FROM users WHERE id = $1`, claims.UserID,
-				).Scan(&u.ID, &u.GitHubID, &u.Email, &u.RazorpayCustomerID,
-					&u.PlanTier, &u.PlanPeriod, &u.PlanPaidAt, &u.CreatedAt); qerr == nil {
-					user = &u
-					err = nil
-				}
-			}
-		}
-	}
-	if err != nil || user == nil {
+	user := s.authUser(r)
+	if user == nil {
 		writeError(w, http.StatusUnauthorized, "unauthorized", "Sign in required.")
 		return
 	}
@@ -117,11 +124,10 @@ func (s *server) handleClaimToken(w http.ResponseWriter, r *http.Request) {
 		tier          string
 		connectionURL string
 	)
-	err = s.db.QueryRow(
+	if err := s.db.QueryRow(
 		`SELECT id, migrated_to_user_id, resource_type, name, status, tier, connection_url
 		 FROM resources WHERE token = $1`, tokenUUID,
-	).Scan(&id, &ownerID, &resourceType, &name, &status, &tier, &connectionURL)
-	if err != nil {
+	).Scan(&id, &ownerID, &resourceType, &name, &status, &tier, &connectionURL); err != nil {
 		writeError(w, http.StatusNotFound, "not_found", "No resource with that token.")
 		return
 	}

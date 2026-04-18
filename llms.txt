@@ -51,6 +51,28 @@ Attach an existing token to your account. Works with a session cookie OR
 `{"token":"<uuid>"}`. Paid users get tier='paid' + no expiry automatically.
 Idempotent — re-claiming your own token returns the same 200 payload.
 
+### GET /api/me/token
+Mint a bearer token for CLI / agent usage. Paid users paste this into
+`Authorization: Bearer <token>` on /db/new and /webhook/new to skip the
+anonymous 5/day per-subnet cap and get permanent resources without going
+through the browser claim flow. 30-day TTL; rotate by calling again.
+
+## Auth for CLIs and agents
+
+Paid-tier callers who don't want to send a browser cookie can authenticate
+any endpoint by passing `Authorization: Bearer <JWT>`:
+
+```
+TOKEN=$(curl -s -b cookies.txt https://api.instanode.dev/api/me/token | jq -r .token)
+
+curl -s -X POST https://api.instanode.dev/db/new \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"my-agent-db"}'
+```
+
+Free-tier (anonymous) callers just omit the header — the 5/day cap applies.
+
 ## Response shape (all provisioning endpoints)
 
 ```json

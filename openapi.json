@@ -53,8 +53,9 @@
       "post": {
         "tags": ["provisioning"],
         "summary": "Provision a Postgres database",
-        "description": "Creates a fresh Postgres database with pgvector. `name` is required — it's the human label surfaced in the dashboard. Anonymous callers (no session cookie) get 5 provisions/subnet/day and 24h-TTL resources. Authenticated paid users get permanent resources with no per-subnet cap.",
+        "description": "Creates a fresh Postgres database with pgvector. `name` is required — it's the human label surfaced in the dashboard. Anonymous callers (no session cookie, no bearer token) get 5 provisions/subnet/day and 24h-TTL resources. Authenticated paid callers (session cookie OR `Authorization: Bearer <JWT>` minted at /api/me/token) get permanent resources with no per-subnet cap.",
         "operationId": "newDB",
+        "security": [{}, {"sessionCookie": []}, {"bearerAuth": []}],
         "requestBody": {
           "required": true,
           "content": {
@@ -103,8 +104,9 @@
       "post": {
         "tags": ["provisioning"],
         "summary": "Provision a webhook receiver",
-        "description": "Returns a `receive_url` that accepts arbitrary payloads. `name` is required — it's the human label surfaced in the dashboard.",
+        "description": "Returns a `receive_url` that accepts arbitrary payloads. `name` is required — it's the human label surfaced in the dashboard. Same auth rules as /db/new: anonymous → 5/subnet/day + 24h TTL, authenticated paid → permanent with no subnet cap.",
         "operationId": "newWebhook",
+        "security": [{}, {"sessionCookie": []}, {"bearerAuth": []}],
         "requestBody": {
           "required": true,
           "content": {
@@ -442,6 +444,34 @@
           },
           "401": {"description": "No valid session cookie."},
           "500": {"description": "Database error."}
+        }
+      }
+    },
+    "/api/me/token": {
+      "get": {
+        "tags": ["dashboard"],
+        "summary": "Mint a bearer token for CLI / agent use",
+        "description": "Returns a freshly-signed JWT the caller can use as `Authorization: Bearer <token>` on /db/new, /webhook/new, and /api/me/claim. Same shape as the session cookie — any authenticated caller can mint one. 30-day TTL.",
+        "operationId": "getAPIToken",
+        "security": [{"sessionCookie": []}, {"bearerAuth": []}],
+        "responses": {
+          "200": {
+            "description": "Signed JWT.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["ok", "token", "expires_in"],
+                  "properties": {
+                    "ok":         {"type": "boolean"},
+                    "token":      {"type": "string", "description": "Paste into Authorization: Bearer header."},
+                    "expires_in": {"type": "integer", "description": "Seconds until the token expires."}
+                  }
+                }
+              }
+            }
+          },
+          "401": {"description": "No session cookie and no valid bearer token."}
         }
       }
     },

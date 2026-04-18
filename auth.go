@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -42,11 +43,17 @@ type Claims struct {
 	jwt.RegisteredClaims
 }
 
+// JWT TTL is 30d so the same token works as a session cookie AND as an API
+// key pasted into `Authorization: Bearer …` from a CLI / agent. Revocation
+// today is all-or-nothing via rotating JWT_SECRET; per-key revocation is on
+// the roadmap.
+const jwtTTL = 30 * 24 * time.Hour
+
 func (s *server) generateJWT(userID uuid.UUID) (string, error) {
 	claims := Claims{
 		UserID: userID,
 		RegisteredClaims: jwt.RegisteredClaims{
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(24 * time.Hour)),
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(jwtTTL)),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
 		},
 	}
@@ -65,6 +72,34 @@ func (s *server) parseJWT(tokenString string) (*Claims, error) {
 		return claims, nil
 	}
 	return nil, fmt.Errorf("invalid token")
+}
+
+// authUser resolves the caller via (in order) the session cookie, then an
+// `Authorization: Bearer <JWT>` header. Returns nil + nil when the request
+// is anonymous (no error, so handlers can cheaply branch on nil).
+func (s *server) authUser(r *http.Request) *User {
+	u, err := s.getUserFromRequest(r)
+	if err == nil && u != nil {
+		return u
+	}
+	authz := r.Header.Get("Authorization")
+	if !strings.HasPrefix(authz, "Bearer ") {
+		return nil
+	}
+	claims, perr := s.parseJWT(strings.TrimPrefix(authz, "Bearer "))
+	if perr != nil {
+		return nil
+	}
+	var user User
+	qerr := s.db.QueryRow(
+		`SELECT id, github_id, email, razorpay_customer_id, plan_tier, plan_period, plan_paid_at, created_at
+		 FROM users WHERE id = $1`, claims.UserID,
+	).Scan(&user.ID, &user.GitHubID, &user.Email, &user.RazorpayCustomerID,
+		&user.PlanTier, &user.PlanPeriod, &user.PlanPaidAt, &user.CreatedAt)
+	if qerr != nil {
+		return nil
+	}
+	return &user
 }
 
 func (s *server) getUserFromRequest(r *http.Request) (*User, error) {
@@ -226,7 +261,7 @@ func (s *server) handleGitHubCallback(w http.ResponseWriter, r *http.Request) {
 		HttpOnly: true,
 		Secure:   true,
 		SameSite: http.SameSiteNoneMode,
-		MaxAge:   86400, // 24 hours
+		MaxAge:   int(jwtTTL.Seconds()),
 	})
 
 	// After login, drop the user on the dashboard on the marketing domain.
