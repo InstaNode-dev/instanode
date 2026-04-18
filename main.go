@@ -28,7 +28,8 @@ var schemaSQL string
 
 type server struct {
 	db        *sql.DB
-	rdb       *redis.Client
+	rdb       *redis.Client // Valkey (rate limits, webhook storage, and where
+	                        // per-tenant ACL users are provisioned)
 	cfg       *Config
 	baseURL   string
 	custDBURL string // customer Postgres (where we CREATE DATABASE)
@@ -108,7 +109,6 @@ func main() {
 
 	// Provisioning endpoints
 	mux.HandleFunc("POST /db/new", s.handleNewDB)
-	mux.HandleFunc("POST /cache/new", s.handleNewCache)
 	mux.HandleFunc("POST /webhook/new", s.handleNewWebhook)
 	mux.HandleFunc("POST /webhook/receive/{token}", s.handleWebhookReceive)
 	mux.HandleFunc("GET /webhook/receive/{token}", s.handleWebhookReceive)

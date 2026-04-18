@@ -54,6 +54,8 @@ type DatabaseConfig struct {
 }
 
 type RedisConfig struct {
+	// URL is the Valkey/Redis backend for internal state only
+	// (rate limits + webhook storage). Not exposed to customers.
 	URL string `yaml:"url"`
 }
 

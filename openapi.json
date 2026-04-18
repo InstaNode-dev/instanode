@@ -3,7 +3,7 @@
   "info": {
     "title": "instanode.dev",
     "version": "0.1.0",
-    "description": "AI-native infrastructure provisioning. Databases, caches, and webhooks in one HTTP call.",
+    "description": "AI-native infrastructure provisioning. Databases and webhooks in one HTTP call.",
     "contact": {
       "name": "instanode.dev",
       "url": "https://instanode.dev"
@@ -16,7 +16,7 @@
     }
   ],
   "tags": [
-    {"name": "provisioning", "description": "Create anonymous databases, caches, and webhook receivers."},
+    {"name": "provisioning", "description": "Create anonymous databases and webhook receivers."},
     {"name": "webhook", "description": "Inbound webhook receiver."},
     {"name": "auth", "description": "GitHub OAuth session management."},
     {"name": "billing", "description": "Razorpay orders, webhooks, and resource claim."},
@@ -69,48 +69,6 @@
             "content": {
               "application/json": {
                 "schema": {"$ref": "#/components/schemas/ProvisionResponse"}
-              }
-            }
-          },
-          "429": {
-            "description": "Daily provision limit reached and no existing resource was found.",
-            "content": {
-              "application/json": {
-                "schema": {"$ref": "#/components/schemas/RateLimitedError"}
-              }
-            }
-          },
-          "503": {
-            "description": "Provisioning backend was unavailable.",
-            "content": {
-              "application/json": {
-                "schema": {"$ref": "#/components/schemas/Error"}
-              }
-            }
-          }
-        }
-      }
-    },
-    "/cache/new": {
-      "post": {
-        "tags": ["provisioning"],
-        "summary": "Provision a Redis cache",
-        "description": "Creates a Redis ACL user with a namespace-isolated key prefix. No account or API key required. Request body is ignored.",
-        "operationId": "newCache",
-        "responses": {
-          "201": {
-            "description": "A new cache was provisioned.",
-            "content": {
-              "application/json": {
-                "schema": {"$ref": "#/components/schemas/CacheProvisionResponse"}
-              }
-            }
-          },
-          "200": {
-            "description": "Daily provision limit already reached; returning the caller's existing resource.",
-            "content": {
-              "application/json": {
-                "schema": {"$ref": "#/components/schemas/CacheProvisionResponse"}
               }
             }
           },
@@ -524,7 +482,7 @@
         "properties": {
           "id":         {"type": "string", "format": "uuid"},
           "token":      {"type": "string", "format": "uuid"},
-          "type":       {"type": "string", "enum": ["postgres", "redis", "webhook"]},
+          "type":       {"type": "string", "enum": ["postgres", "webhook"]},
           "name":       {"type": "string"},
           "tier":       {"$ref": "#/components/schemas/Tier"},
           "status":     {"type": "string", "enum": ["active", "expired", "deleted"]},
@@ -551,13 +509,6 @@
           "expires_in":  {"type": "string", "example": "24h"}
         }
       },
-      "RedisLimits": {
-        "type": "object",
-        "properties": {
-          "memory_mb":  {"type": "integer", "example": 5},
-          "expires_in": {"type": "string", "example": "24h"}
-        }
-      },
       "WebhookLimits": {
         "type": "object",
         "properties": {
@@ -577,21 +528,6 @@
           "tier":           {"$ref": "#/components/schemas/Tier"},
           "limits":         {"$ref": "#/components/schemas/PostgresLimits"},
           "note":           {"type": "string", "description": "Human-readable hint containing the claim URL."}
-        }
-      },
-      "CacheProvisionResponse": {
-        "type": "object",
-        "description": "Redis provisioning response. `key_prefix` is returned when the backend enforces namespace isolation.",
-        "required": ["ok", "id", "token", "connection_url", "tier", "limits", "note"],
-        "properties": {
-          "ok":             {"type": "boolean"},
-          "id":             {"type": "string", "format": "uuid"},
-          "token":          {"type": "string", "format": "uuid"},
-          "connection_url": {"type": "string", "example": "redis://user:pass@host:6379/0"},
-          "key_prefix":     {"type": "string", "description": "All keys written by this cache must start with this prefix."},
-          "tier":           {"$ref": "#/components/schemas/Tier"},
-          "limits":         {"$ref": "#/components/schemas/RedisLimits"},
-          "note":           {"type": "string"}
         }
       },
       "WebhookProvisionResponse": {
