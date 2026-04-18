@@ -14,12 +14,14 @@ import (
 )
 
 type User struct {
-	ID                  uuid.UUID `json:"id"`
-	GitHubID            int64     `json:"github_id"`
-	Email               string    `json:"email"`
-	RazorpayCustomerID  *string   `json:"razorpay_customer_id"`
-	PlanTier            string    `json:"plan_tier"`
-	CreatedAt           time.Time `json:"created_at"`
+	ID                  uuid.UUID  `json:"id"`
+	GitHubID            int64      `json:"github_id"`
+	Email               string     `json:"email"`
+	RazorpayCustomerID  *string    `json:"razorpay_customer_id"`
+	PlanTier            string     `json:"plan_tier"`
+	PlanPeriod          string     `json:"plan_period"`
+	PlanPaidAt          *time.Time `json:"plan_paid_at"`
+	CreatedAt           time.Time  `json:"created_at"`
 }
 
 type Claims struct {
@@ -62,8 +64,11 @@ func (s *server) getUserFromRequest(r *http.Request) (*User, error) {
 		return nil, err
 	}
 	var user User
-	err = s.db.QueryRow("SELECT id, github_id, email, razorpay_customer_id, plan_tier, created_at FROM users WHERE id = $1", claims.UserID).Scan(
-		&user.ID, &user.GitHubID, &user.Email, &user.RazorpayCustomerID, &user.PlanTier, &user.CreatedAt)
+	err = s.db.QueryRow(
+		`SELECT id, github_id, email, razorpay_customer_id, plan_tier, plan_period, plan_paid_at, created_at
+		 FROM users WHERE id = $1`, claims.UserID,
+	).Scan(&user.ID, &user.GitHubID, &user.Email, &user.RazorpayCustomerID,
+		&user.PlanTier, &user.PlanPeriod, &user.PlanPaidAt, &user.CreatedAt)
 	if err != nil {
 		return nil, err
 	}

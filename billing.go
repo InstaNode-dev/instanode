@@ -224,11 +224,21 @@ func (s *server) handlePaymentCaptured(entity map[string]interface{}, paymentID 
 		return
 	}
 
+	// Derive billing period from the plan_id the checkout sent in notes.
+	// Fall back to 'monthly' if missing so we never record an empty string.
+	planID, _ := notes["plan_id"].(string)
+	period := "monthly"
+	if planID == "developer-annual" {
+		period = "annual"
+	}
+
 	// Promote the user's account tier first (independent of whether the
 	// payment entity carried a customer_id — in test mode it often doesn't).
+	// plan_paid_at records the most recent successful charge so the dashboard
+	// can show when the next renewal is expected.
 	if _, err := s.db.Exec(
-		"UPDATE users SET plan_tier = 'paid' WHERE id = $1",
-		userID,
+		"UPDATE users SET plan_tier = 'paid', plan_period = $1, plan_paid_at = NOW() WHERE id = $2",
+		period, userID,
 	); err != nil {
 		slog.Error("failed to promote user plan_tier", "error", err, "user_id", userID)
 	}

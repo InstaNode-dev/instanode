@@ -9,11 +9,15 @@ CREATE TABLE IF NOT EXISTS users (
     email           TEXT UNIQUE NOT NULL,
     razorpay_customer_id TEXT,
     plan_tier       TEXT NOT NULL DEFAULT 'free',
+    plan_period     TEXT NOT NULL DEFAULT 'monthly',
+    plan_paid_at    TIMESTAMPTZ,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- Additive migration for existing installs (runs every startup, idempotent).
-ALTER TABLE users ADD COLUMN IF NOT EXISTS plan_tier TEXT NOT NULL DEFAULT 'free';
+-- Additive migrations for existing installs (idempotent).
+ALTER TABLE users ADD COLUMN IF NOT EXISTS plan_tier   TEXT NOT NULL DEFAULT 'free';
+ALTER TABLE users ADD COLUMN IF NOT EXISTS plan_period TEXT NOT NULL DEFAULT 'monthly';
+ALTER TABLE users ADD COLUMN IF NOT EXISTS plan_paid_at TIMESTAMPTZ;
 
 CREATE TABLE IF NOT EXISTS resources (
     id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
