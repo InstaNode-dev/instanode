@@ -32,6 +32,12 @@ func provisionPostgres(ctx context.Context, custDBURL, token string, cfg *Config
 	connLimit := cfg.Postgres.ConnLimit
 	stmts := []string{
 		fmt.Sprintf(`CREATE USER %s WITH PASSWORD '%s' CONNECTION LIMIT %d`, userName, safePassword, connLimit),
+		// PG15+ requires CREATE DATABASE creator to be a member of the target
+		// OWNER role. provisioner_admin has CREATEDB + CREATEROLE but isn't a
+		// superuser, so we grant membership in the per-tenant role to ourselves.
+		// We deliberately keep this membership so the reaper / quota-lock paths
+		// can later act on the tenant DB as owner (DROP / REVOKE CONNECT).
+		fmt.Sprintf(`GRANT %s TO CURRENT_USER`, userName),
 		fmt.Sprintf(`CREATE DATABASE %s OWNER %s CONNECTION LIMIT %d`, dbName, userName, connLimit),
 	}
 	for _, stmt := range stmts {
