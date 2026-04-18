@@ -10,7 +10,7 @@ server:
 
 database:
   platform_url: "${DATABASE_URL}"
-  customer_url: "${DATABASE_URL}"
+  customer_url: "${CUSTOMER_DATABASE_URL}"
   max_open_conns: 20
   max_idle_conns: 5
 
@@ -37,6 +37,9 @@ postgres:
   conn_limit: 2
   storage_mb: 10
   statement_timeout: "30s"
+  public_host: "${POSTGRES_PUBLIC_HOST}"
+  public_port: 5432
+  require_tls: true
 
 observability:
   enabled: true
