@@ -33,9 +33,15 @@ func startReaper(db *sql.DB, rdb *redis.Client, cfg *Config, custDBURL string) {
 }
 
 func reapExpired(ctx context.Context, db *sql.DB, rdb *redis.Client, cfg *Config, custDBURL string) {
+	// Two sources of reapable rows:
+	//   (a) TTL expired      — status='active', expires_at < NOW()
+	//   (b) User soft-deleted — status='deleted' (no TTL guard)
+	// Both drop the underlying DB and transition the row to a terminal state
+	// (expired or reaped respectively) so the next tick skips them.
 	rows, err := db.QueryContext(ctx,
-		`SELECT id, token, resource_type FROM resources
-		 WHERE status = 'active' AND expires_at IS NOT NULL AND expires_at < NOW()
+		`SELECT id, token, resource_type, status FROM resources
+		 WHERE (status = 'active' AND expires_at IS NOT NULL AND expires_at < NOW())
+		    OR status = 'deleted'
 		 LIMIT $1`, cfg.Reaper.BatchSize)
 	if err != nil {
 		slog.Error("reaper: query failed", "error", err)
@@ -43,10 +49,10 @@ func reapExpired(ctx context.Context, db *sql.DB, rdb *redis.Client, cfg *Config
 	}
 	defer rows.Close()
 
-	var reaped int
+	var reapedExpired, reapedDeleted int
 	for rows.Next() {
-		var id, token, resType string
-		if err := rows.Scan(&id, &token, &resType); err != nil {
+		var id, token, resType, status string
+		if err := rows.Scan(&id, &token, &resType, &status); err != nil {
 			slog.Error("reaper: scan failed", "error", err)
 			continue
 		}
@@ -56,7 +62,7 @@ func reapExpired(ctx context.Context, db *sql.DB, rdb *redis.Client, cfg *Config
 		switch resType {
 		case "postgres":
 			if err := dropPostgresDB(ctx, custDBURL, safe); err != nil {
-				slog.Error("reaper: drop postgres failed", "token", token, "error", err)
+				slog.Error("reaper: drop postgres failed", "token", token, "status", status, "error", err)
 				continue
 			}
 		case "redis":
@@ -69,16 +75,29 @@ func reapExpired(ctx context.Context, db *sql.DB, rdb *redis.Client, cfg *Config
 			rdb.Del(ctx, listKey)
 		}
 
-		_, err := db.ExecContext(ctx, `UPDATE resources SET status = 'expired' WHERE id = $1`, id)
-		if err != nil {
-			slog.Error("reaper: mark expired failed", "id", id, "error", err)
+		// Transition to a terminal state so the next tick skips this row.
+		// We keep the row around for audit / dashboard history queries; a
+		// separate purge policy can prune very old ones later.
+		newStatus := "expired"
+		if status == "deleted" {
+			newStatus = "reaped"
+		}
+		if _, err := db.ExecContext(ctx,
+			`UPDATE resources SET status = $1 WHERE id = $2`, newStatus, id,
+		); err != nil {
+			slog.Error("reaper: mark terminal failed", "id", id, "new_status", newStatus, "error", err)
 			continue
 		}
-		reaped++
+		if status == "deleted" {
+			reapedDeleted++
+		} else {
+			reapedExpired++
+		}
 	}
 
-	if reaped > 0 {
-		slog.Info("reaper: cleaned up expired resources", "count", reaped)
+	if reapedExpired > 0 || reapedDeleted > 0 {
+		slog.Info("reaper: cleaned up resources",
+			"expired", reapedExpired, "user_deleted", reapedDeleted)
 	}
 }
 

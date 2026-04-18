@@ -447,6 +447,64 @@
         }
       }
     },
+    "/api/me/resources/{token}": {
+      "delete": {
+        "tags": ["dashboard"],
+        "summary": "Delete one of the caller's resources (paid tier only)",
+        "description": "Immediately drops the underlying database (Postgres) or clears the stored requests (webhook), then marks status='deleted' in the platform DB. Only available on the paid Developer tier — free-tier resources auto-expire after 24 hours so they don't need a delete endpoint.",
+        "operationId": "deleteResource",
+        "security": [{"sessionCookie": []}, {"bearerAuth": []}],
+        "parameters": [
+          {
+            "name": "token",
+            "in": "path",
+            "required": true,
+            "schema": {"type": "string", "format": "uuid"},
+            "description": "The resource token."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Resource deleted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["ok", "id", "token"],
+                  "properties": {
+                    "ok":    {"type": "boolean"},
+                    "id":    {"type": "string", "format": "uuid"},
+                    "token": {"type": "string", "format": "uuid"}
+                  }
+                }
+              }
+            }
+          },
+          "400": {"description": "Malformed token."},
+          "401": {"description": "No session cookie and no valid bearer."},
+          "403": {
+            "description": "Caller is on the free tier. Response includes an `upgrade_url` linking to the pricing page.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["ok", "error", "message", "upgrade_url"],
+                  "properties": {
+                    "ok":          {"type": "boolean", "example": false},
+                    "error":       {"type": "string", "example": "paid_tier_only"},
+                    "message":     {"type": "string"},
+                    "upgrade_url": {"type": "string", "format": "uri"}
+                  }
+                }
+              }
+            }
+          },
+          "404": {"description": "Token not found or not owned by the caller."},
+          "410": {"description": "Resource has already been deleted or expired."},
+          "500": {"description": "Could not drop the underlying database."}
+        }
+      }
+    },
     "/api/me/token": {
       "get": {
         "tags": ["dashboard"],

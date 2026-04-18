@@ -105,6 +105,21 @@ that accepts it.
 List the resources claimed by the authenticated user. Same auth rules as
 `/api/me/claim`. Returns a JSON array.
 
+### DELETE /api/me/resources/{token}
+Immediately destroy one of your resources. **Paid tier only** — free-tier
+resources auto-expire in 24h so they don't need a delete endpoint. Free-tier
+callers receive `403 paid_tier_only` with an `upgrade_url` pointing to
+`https://instanode.dev/pricing.html`. Response shape for free users:
+
+```json
+{
+  "ok": false,
+  "error": "paid_tier_only",
+  "message": "Delete is a Developer-tier feature...",
+  "upgrade_url": "https://instanode.dev/pricing.html"
+}
+```
+
 ### GET /auth/github/login
 Redirects to GitHub OAuth. On success, sets the `session` cookie and sends
 you to `https://instanode.dev/dashboard.html`.

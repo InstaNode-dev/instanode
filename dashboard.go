@@ -31,7 +31,8 @@ func (s *server) handleGetResources(w http.ResponseWriter, r *http.Request) {
 	rows, err := s.db.Query(`
 		SELECT id, token, resource_type, name, tier, status, created_at, expires_at
 		FROM resources
-		WHERE migrated_to_user_id = $1 OR (token IN (SELECT token FROM resources WHERE migrated_to_user_id = $1))
+		WHERE migrated_to_user_id = $1
+		  AND status NOT IN ('deleted', 'reaped', 'expired')
 		ORDER BY created_at DESC`, user.ID)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "resources: query failed", "error", err, "user_id", user.ID)
@@ -76,6 +77,73 @@ func (s *server) handleGetAPIToken(w http.ResponseWriter, r *http.Request) {
 		"ok":         true,
 		"token":      tok,
 		"expires_in": int(jwtTTL.Seconds()),
+	})
+}
+
+// ── DELETE /api/me/resources/{token} ───────────────────────────────────────
+//
+// Soft-deletes one of the caller's resources. Paid-tier only — free-tier
+// resources auto-expire in 24h so they don't need this; and we don't want
+// an open endpoint that could be used to churn the provisioner faster than
+// the rate limiter can reason about.
+//
+// The actual drop of the underlying database (and purge of stored webhook
+// payloads) happens in the background from the reaper loop, typically
+// within the next 5-minute tick. The response returns as soon as
+// status='deleted' + deleted_at=NOW() has been written; the resource
+// immediately stops appearing on the user's dashboard.
+func (s *server) handleDeleteResource(w http.ResponseWriter, r *http.Request) {
+	user := s.authUser(r)
+	if user == nil {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "Sign in required.")
+		return
+	}
+	if user.PlanTier != "paid" {
+		writeJSON(w, http.StatusForbidden, map[string]any{
+			"ok":          false,
+			"error":       "paid_tier_only",
+			"message":     "Delete is a Developer-tier feature. Free-tier resources auto-expire in 24 hours — upgrade to remove them on demand.",
+			"upgrade_url": "https://instanode.dev/pricing.html",
+		})
+		return
+	}
+
+	tokenStr := r.PathValue("token")
+	tokenUUID, perr := uuid.Parse(strings.TrimSpace(tokenStr))
+	if perr != nil {
+		writeError(w, http.StatusBadRequest, "invalid_token", "token must be a UUID.")
+		return
+	}
+
+	// Single UPDATE handles ownership, status check, and soft-delete in one
+	// round-trip. RETURNING tells us whether anything was actually updated.
+	var id uuid.UUID
+	err := s.db.QueryRow(
+		`UPDATE resources
+		 SET status = 'deleted', deleted_at = NOW()
+		 WHERE token = $1
+		   AND migrated_to_user_id = $2
+		   AND status = 'active'
+		 RETURNING id`,
+		tokenUUID, user.ID,
+	).Scan(&id)
+	if err != nil {
+		// Either the token doesn't exist, belongs to someone else, or is
+		// already non-active. We don't distinguish — 404 in every case so
+		// we never leak another user's resource state.
+		writeError(w, http.StatusNotFound, "not_found", "No active resource with that token.")
+		return
+	}
+
+	slog.InfoContext(r.Context(), "resource.soft_deleted",
+		"user_id", user.ID, "token", tokenUUID.String())
+
+	writeJSON(w, http.StatusAccepted, map[string]any{
+		"ok":      true,
+		"id":      id.String(),
+		"token":   tokenUUID.String(),
+		"status":  "deleted",
+		"message": "Queued for deletion. The underlying database is removed within 5 minutes.",
 	})
 }
 

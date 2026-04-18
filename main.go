@@ -128,6 +128,7 @@ func main() {
 	mux.HandleFunc("GET /api/me/resources", s.handleGetResources)
 	mux.HandleFunc("POST /api/me/claim", s.handleClaimToken)
 	mux.HandleFunc("GET /api/me/token", s.handleGetAPIToken)
+	mux.HandleFunc("DELETE /api/me/resources/{token}", s.handleDeleteResource)
 	mux.HandleFunc("GET /dashboard", func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "https://instanode.dev/dashboard", http.StatusFound)
 	})

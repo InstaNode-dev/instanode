@@ -25,14 +25,24 @@ CREATE TABLE IF NOT EXISTS resources (
     resource_type   TEXT NOT NULL CHECK (resource_type IN ('postgres', 'redis', 'webhook')),
     name            TEXT NOT NULL DEFAULT '',
     tier            TEXT NOT NULL DEFAULT 'anonymous',
+    -- Status transitions:
+    --   active   → expired  (reaper; TTL elapsed)
+    --   active   → deleted  (user-initiated DELETE /api/me/resources/{token})
+    --   deleted  → reaped   (reaper; underlying DB has been dropped)
     status          TEXT NOT NULL DEFAULT 'active',
     fingerprint     TEXT NOT NULL DEFAULT '',
     connection_url  TEXT NOT NULL DEFAULT '',
     key_prefix      TEXT NOT NULL DEFAULT '',
     expires_at      TIMESTAMPTZ,
+    deleted_at      TIMESTAMPTZ,
     migrated_to_user_id UUID REFERENCES users(id),
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+ALTER TABLE resources ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;
+CREATE INDEX IF NOT EXISTS idx_resources_status_deleted
+    ON resources (deleted_at)
+    WHERE status = 'deleted';
 
 CREATE INDEX IF NOT EXISTS idx_resources_fingerprint_type
     ON resources (fingerprint, resource_type)
