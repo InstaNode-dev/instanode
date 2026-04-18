@@ -143,6 +143,7 @@ func main() {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.Write(llmsTxt)
 	})
+	mux.HandleFunc("GET /openapi.json", s.handleOpenAPI)
 
 	// Root — redirect to website (hosted separately on GitHub Pages).
 	mux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {

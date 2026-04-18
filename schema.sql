@@ -36,3 +36,8 @@ CREATE INDEX IF NOT EXISTS idx_resources_token
 CREATE INDEX IF NOT EXISTS idx_resources_expires_at
     ON resources (expires_at)
     WHERE expires_at IS NOT NULL AND status = 'active';
+
+CREATE TABLE IF NOT EXISTS processed_webhooks (
+    event_id        TEXT PRIMARY KEY,
+    received_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);

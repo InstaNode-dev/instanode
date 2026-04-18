@@ -1,0 +1,632 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "instanode.dev",
+    "version": "0.1.0",
+    "description": "AI-native infrastructure provisioning. Databases, caches, and webhooks in one HTTP call.",
+    "contact": {
+      "name": "instanode.dev",
+      "url": "https://instanode.dev"
+    }
+  },
+  "servers": [
+    {
+      "url": "https://api.instanode.dev",
+      "description": "Production"
+    }
+  ],
+  "tags": [
+    {"name": "provisioning", "description": "Create anonymous databases, caches, and webhook receivers."},
+    {"name": "webhook", "description": "Inbound webhook receiver."},
+    {"name": "auth", "description": "GitHub OAuth session management."},
+    {"name": "billing", "description": "Razorpay orders, webhooks, and resource claim."},
+    {"name": "dashboard", "description": "Authenticated resource listing."},
+    {"name": "meta", "description": "Health and machine-readable docs."}
+  ],
+  "paths": {
+    "/healthz": {
+      "get": {
+        "tags": ["meta"],
+        "summary": "Health check",
+        "description": "Liveness probe. Always returns 200 when the process is running.",
+        "operationId": "healthz",
+        "responses": {
+          "200": {
+            "description": "Service is up.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["ok", "service"],
+                  "properties": {
+                    "ok":      {"type": "boolean", "example": true},
+                    "service": {"type": "string",  "example": "instant-lite"}
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/db/new": {
+      "post": {
+        "tags": ["provisioning"],
+        "summary": "Provision a Postgres database",
+        "description": "Creates a fresh Postgres database with pgvector. No account or API key required. Request body is ignored. The first 5 provisions per IP subnet per day create new resources; subsequent calls return the most recently created resource for that subnet.",
+        "operationId": "newDB",
+        "responses": {
+          "201": {
+            "description": "A new database was provisioned.",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/ProvisionResponse"}
+              }
+            }
+          },
+          "200": {
+            "description": "Daily provision limit already reached; returning the caller's existing resource.",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/ProvisionResponse"}
+              }
+            }
+          },
+          "429": {
+            "description": "Daily provision limit reached and no existing resource was found.",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/RateLimitedError"}
+              }
+            }
+          },
+          "503": {
+            "description": "Provisioning backend was unavailable.",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/Error"}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/cache/new": {
+      "post": {
+        "tags": ["provisioning"],
+        "summary": "Provision a Redis cache",
+        "description": "Creates a Redis ACL user with a namespace-isolated key prefix. No account or API key required. Request body is ignored.",
+        "operationId": "newCache",
+        "responses": {
+          "201": {
+            "description": "A new cache was provisioned.",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/CacheProvisionResponse"}
+              }
+            }
+          },
+          "200": {
+            "description": "Daily provision limit already reached; returning the caller's existing resource.",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/CacheProvisionResponse"}
+              }
+            }
+          },
+          "429": {
+            "description": "Daily provision limit reached and no existing resource was found.",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/RateLimitedError"}
+              }
+            }
+          },
+          "503": {
+            "description": "Provisioning backend was unavailable.",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/Error"}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/webhook/new": {
+      "post": {
+        "tags": ["provisioning"],
+        "summary": "Provision a webhook receiver",
+        "description": "Returns a `receive_url` that accepts arbitrary payloads. Stored requests can be retrieved via a dashboard (or directly from Redis if self-hosting). Request body is ignored.",
+        "operationId": "newWebhook",
+        "responses": {
+          "201": {
+            "description": "A new webhook receiver was provisioned.",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/WebhookProvisionResponse"}
+              }
+            }
+          },
+          "200": {
+            "description": "Daily provision limit already reached; returning the caller's existing resource.",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/WebhookProvisionResponse"}
+              }
+            }
+          },
+          "429": {
+            "description": "Daily provision limit reached and no existing resource was found.",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/RateLimitedError"}
+              }
+            }
+          },
+          "503": {
+            "description": "Provisioning backend was unavailable.",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/Error"}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/webhook/receive/{token}": {
+      "parameters": [
+        {
+          "name": "token",
+          "in": "path",
+          "required": true,
+          "description": "Webhook receiver token from `POST /webhook/new`.",
+          "schema": {"type": "string", "format": "uuid"}
+        }
+      ],
+      "post": {
+        "tags": ["webhook"],
+        "summary": "Deliver a webhook payload",
+        "description": "Stores the inbound request (method, headers, body) in Redis keyed by the webhook token. Accepts any content type.",
+        "operationId": "receiveWebhookPost",
+        "requestBody": {
+          "required": false,
+          "description": "Arbitrary payload. Capped by the server's `webhook_max_body_bytes` limit.",
+          "content": {
+            "*/*": {"schema": {}}
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Request stored.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["ok", "id"],
+                  "properties": {
+                    "ok": {"type": "boolean"},
+                    "id": {"type": "string", "format": "uuid", "description": "Generated identifier for this stored request."}
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed token.",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "404": {
+            "description": "No webhook resource exists for this token.",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "410": {
+            "description": "Webhook is no longer active (expired or deleted).",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "503": {
+            "description": "Failed to look up the webhook resource.",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          }
+        }
+      },
+      "get": {
+        "tags": ["webhook"],
+        "summary": "Deliver a GET-style webhook",
+        "description": "Identical to the POST variant — some providers (e.g. health pings) deliver via GET. Stores method, headers, and empty body.",
+        "operationId": "receiveWebhookGet",
+        "responses": {
+          "200": {
+            "description": "Request stored.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["ok", "id"],
+                  "properties": {
+                    "ok": {"type": "boolean"},
+                    "id": {"type": "string", "format": "uuid"}
+                  }
+                }
+              }
+            }
+          },
+          "400": {"description": "Malformed token.", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+          "404": {"description": "No webhook resource exists for this token.", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+          "410": {"description": "Webhook is no longer active.", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}}
+        }
+      }
+    },
+    "/auth/github/login": {
+      "get": {
+        "tags": ["auth"],
+        "summary": "Start GitHub OAuth flow",
+        "description": "Sets an `oauth_state` cookie and 302-redirects to GitHub's authorization endpoint.",
+        "operationId": "githubLogin",
+        "responses": {
+          "302": {
+            "description": "Redirect to GitHub authorization URL.",
+            "headers": {
+              "Location": {
+                "description": "`https://github.com/login/oauth/authorize?...`",
+                "schema": {"type": "string", "format": "uri"}
+              },
+              "Set-Cookie": {
+                "description": "`oauth_state` — random 32-hex-char value used to verify the callback.",
+                "schema": {"type": "string"}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/github/callback": {
+      "get": {
+        "tags": ["auth"],
+        "summary": "GitHub OAuth callback",
+        "description": "GitHub redirects here with `code` and `state`. On success, upserts the user, signs a 24h JWT, sets the `session` cookie, and redirects to `/pricing`.",
+        "operationId": "githubCallback",
+        "parameters": [
+          {"name": "code",  "in": "query", "required": true, "schema": {"type": "string"}, "description": "Authorization code from GitHub."},
+          {"name": "state", "in": "query", "required": true, "schema": {"type": "string"}, "description": "Must match the `oauth_state` cookie set by `/auth/github/login`."}
+        ],
+        "responses": {
+          "302": {
+            "description": "Authenticated. Session cookie set; redirected to `/pricing`.",
+            "headers": {
+              "Location":   {"schema": {"type": "string", "format": "uri"}},
+              "Set-Cookie": {"description": "`session` — HttpOnly JWT, 24h MaxAge.", "schema": {"type": "string"}}
+            }
+          },
+          "400": {"description": "State mismatch."},
+          "500": {"description": "GitHub token exchange or user upsert failed."}
+        }
+      }
+    },
+    "/auth/me": {
+      "get": {
+        "tags": ["auth"],
+        "summary": "Current authenticated user",
+        "description": "Returns the user represented by the `session` cookie.",
+        "operationId": "me",
+        "security": [{"sessionCookie": []}],
+        "responses": {
+          "200": {
+            "description": "Authenticated user.",
+            "content": {
+              "application/json": {"schema": {"$ref": "#/components/schemas/User"}}
+            }
+          },
+          "401": {"description": "No valid session cookie."}
+        }
+      }
+    },
+    "/auth/logout": {
+      "post": {
+        "tags": ["auth"],
+        "summary": "Log out",
+        "description": "Expires the `session` cookie and redirects to `/`.",
+        "operationId": "logout",
+        "responses": {
+          "302": {
+            "description": "Session cleared; redirect to `/`.",
+            "headers": {
+              "Location":   {"schema": {"type": "string", "format": "uri"}},
+              "Set-Cookie": {"description": "`session=; MaxAge=-1`.", "schema": {"type": "string"}}
+            }
+          }
+        }
+      }
+    },
+    "/billing/create-order": {
+      "post": {
+        "tags": ["billing"],
+        "summary": "Create a Razorpay order",
+        "description": "Creates a Razorpay order for the given plan and currency. Returns the order id, amount, and public key id for use with the Razorpay Checkout SDK in the browser.",
+        "operationId": "createOrder",
+        "security": [{"sessionCookie": []}],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["plan_id"],
+                "properties": {
+                  "plan_id":  {"type": "string", "enum": ["developer"], "description": "Plan identifier."},
+                  "currency": {"type": "string", "enum": ["USD", "EUR", "GBP", "INR"], "default": "USD"},
+                  "token":    {"type": "string", "format": "uuid", "description": "Optional anonymous resource token to claim after payment."}
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Razorpay order created.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["order_id", "amount", "currency", "key_id", "name", "email"],
+                  "properties": {
+                    "order_id": {"type": "string"},
+                    "amount":   {"type": "integer", "description": "Amount in minor units (cents / paise)."},
+                    "currency": {"type": "string"},
+                    "key_id":   {"type": "string", "description": "Razorpay public key id for the Checkout SDK."},
+                    "name":     {"type": "string"},
+                    "email":    {"type": "string", "format": "email"},
+                    "contact":  {"type": "string"}
+                  }
+                }
+              }
+            }
+          },
+          "400": {"description": "Invalid plan, currency, or body."},
+          "401": {"description": "No valid session cookie."},
+          "500": {"description": "Razorpay order creation failed."}
+        }
+      }
+    },
+    "/webhooks/razorpay": {
+      "post": {
+        "tags": ["billing"],
+        "summary": "Razorpay webhook receiver",
+        "description": "Receives `payment.captured` / `payment.failed` events from Razorpay. Signature is verified via `X-Razorpay-Signature` (HMAC-SHA256 of the raw body using the configured webhook secret). Payment ids are deduped via the `processed_webhooks` table.",
+        "operationId": "razorpayWebhook",
+        "parameters": [
+          {
+            "name": "X-Razorpay-Signature",
+            "in": "header",
+            "required": true,
+            "description": "Hex-encoded HMAC-SHA256 of the raw request body.",
+            "schema": {"type": "string"}
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "description": "Razorpay webhook envelope. See https://razorpay.com/docs/webhooks/payloads/."
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {"description": "Accepted (including ignored / already-processed events)."},
+          "400": {"description": "Invalid JSON or missing event type."},
+          "401": {"description": "Signature verification failed."},
+          "500": {"description": "Database error while deduping event."}
+        }
+      }
+    },
+    "/billing/migrate": {
+      "post": {
+        "tags": ["billing"],
+        "summary": "Claim an anonymous resource",
+        "description": "Binds all resources that currently share the given anonymous `token` to the authenticated user and promotes them to the paid tier (clearing `expires_at`). Idempotent for tokens already claimed by this user.",
+        "operationId": "migrateResource",
+        "security": [{"sessionCookie": []}],
+        "parameters": [
+          {
+            "name": "token",
+            "in": "query",
+            "required": true,
+            "description": "Anonymous resource token returned from a provisioning call.",
+            "schema": {"type": "string", "format": "uuid"}
+          }
+        ],
+        "responses": {
+          "200": {"description": "Resources claimed."},
+          "400": {"description": "Missing or malformed token."},
+          "401": {"description": "No valid session cookie."},
+          "500": {"description": "Database error."}
+        }
+      }
+    },
+    "/api/me/resources": {
+      "get": {
+        "tags": ["dashboard"],
+        "summary": "List the authenticated user's resources",
+        "description": "Returns all resources claimed by the authenticated user (or sharing a token with a claimed resource), newest first.",
+        "operationId": "listMyResources",
+        "security": [{"sessionCookie": []}],
+        "responses": {
+          "200": {
+            "description": "Resource list (may be empty).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {"$ref": "#/components/schemas/Resource"}
+                }
+              }
+            }
+          },
+          "401": {"description": "No valid session cookie."},
+          "500": {"description": "Database error."}
+        }
+      }
+    },
+    "/llms.txt": {
+      "get": {
+        "tags": ["meta"],
+        "summary": "Machine-readable overview for LLM agents",
+        "description": "Plain-text summary of endpoints, tiers, and usage aimed at LLMs and AI agents.",
+        "operationId": "llmsTxt",
+        "responses": {
+          "200": {
+            "description": "Plain-text overview.",
+            "content": {
+              "text/plain": {"schema": {"type": "string"}}
+            }
+          }
+        }
+      }
+    },
+    "/openapi.json": {
+      "get": {
+        "tags": ["meta"],
+        "summary": "This OpenAPI 3.1 document",
+        "description": "The machine-readable schema describing every endpoint on this server. Served as `application/json`.",
+        "operationId": "openapiJSON",
+        "responses": {
+          "200": {
+            "description": "OpenAPI 3.1 JSON document.",
+            "content": {"application/json": {"schema": {"type": "object"}}}
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "sessionCookie": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "session",
+        "description": "HttpOnly JWT set by `GET /auth/github/callback`."
+      }
+    },
+    "schemas": {
+      "Tier": {
+        "type": "string",
+        "enum": ["anonymous", "paid"],
+        "description": "Resource tier. Anonymous resources expire; paid resources do not."
+      },
+      "Resource": {
+        "type": "object",
+        "description": "A provisioned resource owned by (or claimed by) a user.",
+        "required": ["id", "token", "type", "name", "tier", "status", "created_at"],
+        "properties": {
+          "id":         {"type": "string", "format": "uuid"},
+          "token":      {"type": "string", "format": "uuid"},
+          "type":       {"type": "string", "enum": ["postgres", "redis", "webhook"]},
+          "name":       {"type": "string"},
+          "tier":       {"$ref": "#/components/schemas/Tier"},
+          "status":     {"type": "string", "enum": ["active", "expired", "deleted"]},
+          "created_at": {"type": "string", "format": "date-time"},
+          "expires_at": {"type": ["string", "null"], "format": "date-time", "description": "Null for paid resources."}
+        }
+      },
+      "User": {
+        "type": "object",
+        "required": ["id", "github_id", "email", "created_at"],
+        "properties": {
+          "id":                    {"type": "string", "format": "uuid"},
+          "github_id":             {"type": "integer", "format": "int64"},
+          "email":                 {"type": "string", "format": "email"},
+          "razorpay_customer_id":  {"type": ["string", "null"]},
+          "created_at":            {"type": "string", "format": "date-time"}
+        }
+      },
+      "PostgresLimits": {
+        "type": "object",
+        "properties": {
+          "storage_mb":  {"type": "integer", "example": 10},
+          "connections": {"type": "integer", "example": 2},
+          "expires_in":  {"type": "string", "example": "24h"}
+        }
+      },
+      "RedisLimits": {
+        "type": "object",
+        "properties": {
+          "memory_mb":  {"type": "integer", "example": 5},
+          "expires_in": {"type": "string", "example": "24h"}
+        }
+      },
+      "WebhookLimits": {
+        "type": "object",
+        "properties": {
+          "requests_stored": {"type": "integer", "example": 100},
+          "expires_in":      {"type": "string", "example": "24h"}
+        }
+      },
+      "ProvisionResponse": {
+        "type": "object",
+        "description": "Postgres provisioning response.",
+        "required": ["ok", "id", "token", "connection_url", "tier", "limits", "note"],
+        "properties": {
+          "ok":             {"type": "boolean"},
+          "id":             {"type": "string", "format": "uuid"},
+          "token":          {"type": "string", "format": "uuid", "description": "Opaque token used to claim the resource later."},
+          "connection_url": {"type": "string", "example": "postgres://user:pass@host:5432/dbname", "description": "Standard Postgres URL; usable with every driver."},
+          "tier":           {"$ref": "#/components/schemas/Tier"},
+          "limits":         {"$ref": "#/components/schemas/PostgresLimits"},
+          "note":           {"type": "string", "description": "Human-readable hint containing the claim URL."}
+        }
+      },
+      "CacheProvisionResponse": {
+        "type": "object",
+        "description": "Redis provisioning response. `key_prefix` is returned when the backend enforces namespace isolation.",
+        "required": ["ok", "id", "token", "connection_url", "tier", "limits", "note"],
+        "properties": {
+          "ok":             {"type": "boolean"},
+          "id":             {"type": "string", "format": "uuid"},
+          "token":          {"type": "string", "format": "uuid"},
+          "connection_url": {"type": "string", "example": "redis://user:pass@host:6379/0"},
+          "key_prefix":     {"type": "string", "description": "All keys written by this cache must start with this prefix."},
+          "tier":           {"$ref": "#/components/schemas/Tier"},
+          "limits":         {"$ref": "#/components/schemas/RedisLimits"},
+          "note":           {"type": "string"}
+        }
+      },
+      "WebhookProvisionResponse": {
+        "type": "object",
+        "description": "Webhook receiver provisioning response.",
+        "required": ["ok", "id", "token", "receive_url", "tier", "limits", "note"],
+        "properties": {
+          "ok":          {"type": "boolean"},
+          "id":          {"type": "string", "format": "uuid"},
+          "token":       {"type": "string", "format": "uuid"},
+          "receive_url": {"type": "string", "format": "uri", "example": "https://api.instanode.dev/webhook/receive/9b0e..."},
+          "tier":        {"$ref": "#/components/schemas/Tier"},
+          "expires_at":  {"type": "string", "format": "date-time"},
+          "limits":      {"$ref": "#/components/schemas/WebhookLimits"},
+          "note":        {"type": "string"}
+        }
+      },
+      "Error": {
+        "type": "object",
+        "required": ["ok", "error"],
+        "properties": {
+          "ok":      {"type": "boolean", "example": false},
+          "error":   {"type": "string", "example": "provision_failed"},
+          "message": {"type": "string"}
+        }
+      },
+      "RateLimitedError": {
+        "type": "object",
+        "required": ["ok", "error", "message"],
+        "properties": {
+          "ok":      {"type": "boolean", "example": false},
+          "error":   {"type": "string", "example": "rate_limited"},
+          "message": {"type": "string", "example": "Daily provision limit reached (5/day). Keep resources forever: https://api.instanode.dev/start"}
+        }
+      }
+    }
+  }
+}

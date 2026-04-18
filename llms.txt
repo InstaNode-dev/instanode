@@ -2,6 +2,14 @@
 
 > Zero-setup infrastructure. One HTTP call = real database.
 
+## Machine-readable schema
+
+Full OpenAPI 3.1 spec (every endpoint, request, response, schema):
+```
+https://api.instanode.dev/openapi.json
+```
+Import this URL into any OpenAPI-aware tool, MCP server, or agent framework.
+
 ## Quick start
 
 Provision a Postgres database (no account, no API key):
