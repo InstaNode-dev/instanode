@@ -199,7 +199,16 @@ func (s *server) handleNewWebhook(w http.ResponseWriter, r *http.Request) {
 		t := time.Now().UTC().Add(anonTTL)
 		expiresAt = &t
 	}
-	receiveURL := fmt.Sprintf("%s/webhook/receive/%s", s.baseURL, token.String())
+	// baseURL is the marketing host (https://instanode.dev) which serves
+	// static pages on GitHub Pages — POST requests to it return 405. Emit
+	// webhook receive URLs against the API host instead.
+	receiveBase := s.cfg.Server.BaseURL
+	if strings.HasPrefix(receiveBase, "https://instanode.dev") {
+		receiveBase = "https://api.instanode.dev"
+	} else if strings.HasPrefix(receiveBase, "http://instanode.dev") {
+		receiveBase = "http://api.instanode.dev"
+	}
+	receiveURL := fmt.Sprintf("%s/webhook/receive/%s", receiveBase, token.String())
 
 	id := uuid.New()
 	var err error
@@ -382,13 +391,29 @@ func (s *server) fingerprint(r *http.Request) string {
 	return fmt.Sprintf("%x", h)[:16]
 }
 
+// clientIP resolves the real client IP from the reverse-proxy chain.
+// Preference order:
+//  1. CF-Connecting-IP (CloudFlare sets this to the original client)
+//  2. True-Client-IP (CloudFlare enterprise / some CDNs)
+//  3. X-Forwarded-For first element (RFC 7239 — client is first, proxies append)
+//  4. X-Real-IP
+//  5. RemoteAddr
+//
+// Previously we took the LAST element of XFF, which returned a different DO
+// edge IP per request and broke per-subnet rate limiting entirely.
 func clientIP(r *http.Request) string {
+	if v := r.Header.Get("CF-Connecting-IP"); v != "" {
+		return strings.TrimSpace(v)
+	}
+	if v := r.Header.Get("True-Client-IP"); v != "" {
+		return strings.TrimSpace(v)
+	}
 	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
 		parts := strings.Split(xff, ",")
-		return strings.TrimSpace(parts[len(parts)-1])
+		return strings.TrimSpace(parts[0])
 	}
 	if xri := r.Header.Get("X-Real-IP"); xri != "" {
-		return xri
+		return strings.TrimSpace(xri)
 	}
 	host, _, _ := net.SplitHostPort(r.RemoteAddr)
 	return host
