@@ -8,6 +8,11 @@ server:
   write_timeout: "60s"
   idle_timeout: "120s"
 
+github:
+  client_id: "${GITHUB_CLIENT_ID}"
+  client_secret: "${GITHUB_CLIENT_SECRET}"
+  redirect_uri: "${GITHUB_REDIRECT_URI}"
+
 database:
   platform_url: "${DATABASE_URL}"
   customer_url: "${CUSTOMER_DATABASE_URL}"
