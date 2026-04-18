@@ -198,7 +198,18 @@ func withMiddleware(next http.Handler, cfg *Config) http.Handler {
 		r.Body = http.MaxBytesReader(w, r.Body, cfg.Limits.MaxRequestBodyBytes)
 
 		w.Header().Set("X-Request-ID", fmt.Sprintf("%d", time.Now().UnixNano()))
-		w.Header().Set("Access-Control-Allow-Origin", "*")
+		// Browsers reject Access-Control-Allow-Credentials: true together with
+		// a wildcard origin. Echo the request Origin when it's one of ours,
+		// otherwise fall back to wildcard for non-browser (curl/SDK) clients.
+		origin := r.Header.Get("Origin")
+		switch origin {
+		case "https://instanode.dev", "http://localhost:5173", "http://localhost:3000":
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Access-Control-Allow-Credentials", "true")
+			w.Header().Set("Vary", "Origin")
+		case "":
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+		}
 		w.Header().Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS, PUT, DELETE")
 		w.Header().Set("Access-Control-Allow-Headers", "Accept, Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, X-Requested-With")
 		if r.Method == http.MethodOptions {

@@ -195,17 +195,23 @@ func (s *server) handleGitHubCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Set session cookie
+	// Session cookie. Shared across api.instanode.dev and instanode.dev so
+	// the static marketing/dashboard pages can authenticate fetch() calls
+	// against the API. SameSite=None + Secure are required by modern
+	// browsers for cross-site cookie sends.
 	http.SetCookie(w, &http.Cookie{
 		Name:     "session",
 		Value:    token,
 		Path:     "/",
+		Domain:   "instanode.dev",
 		HttpOnly: true,
+		Secure:   true,
+		SameSite: http.SameSiteNoneMode,
 		MaxAge:   86400, // 24 hours
 	})
 
-	// Redirect to pricing
-	http.Redirect(w, r, "/pricing", http.StatusFound)
+	// After login, drop the user on the dashboard on the marketing domain.
+	http.Redirect(w, r, "https://instanode.dev/dashboard.html", http.StatusFound)
 }
 
 func (s *server) handleLogout(w http.ResponseWriter, r *http.Request) {
@@ -213,10 +219,13 @@ func (s *server) handleLogout(w http.ResponseWriter, r *http.Request) {
 		Name:     "session",
 		Value:    "",
 		Path:     "/",
+		Domain:   "instanode.dev",
 		HttpOnly: true,
+		Secure:   true,
+		SameSite: http.SameSiteNoneMode,
 		MaxAge:   -1,
 	})
-	http.Redirect(w, r, "/", http.StatusFound)
+	http.Redirect(w, r, "https://instanode.dev/", http.StatusFound)
 }
 
 func (s *server) handleMe(w http.ResponseWriter, r *http.Request) {
