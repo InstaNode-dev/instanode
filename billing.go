@@ -50,13 +50,13 @@ var planPricing = map[string]map[string]int{
 func (s *server) handleCreateOrder(w http.ResponseWriter, r *http.Request) {
 	user, err := s.getUserFromRequest(r)
 	if err != nil {
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		writeError(w, http.StatusUnauthorized, "unauthorized", "Sign in required.")
 		return
 	}
 
 	var req CreateOrderRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid request", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "invalid_body", "Request body must be JSON.")
 		return
 	}
 
@@ -66,12 +66,12 @@ func (s *server) handleCreateOrder(w http.ResponseWriter, r *http.Request) {
 
 	currencies, ok := planPricing[req.PlanID]
 	if !ok {
-		http.Error(w, "Invalid plan", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "invalid_plan", "Unknown plan_id.")
 		return
 	}
 	amount, ok := currencies[req.Currency]
 	if !ok {
-		http.Error(w, "Invalid currency", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "invalid_currency", "Supported currencies: USD, EUR, GBP, INR.")
 		return
 	}
 
@@ -97,8 +97,8 @@ func (s *server) handleCreateOrder(w http.ResponseWriter, r *http.Request) {
 
 	order, err := client.Order.Create(data, nil)
 	if err != nil {
-		slog.Error("razorpay order create failed", "error", err, "user_id", user.ID, "plan", req.PlanID, "currency", req.Currency)
-		http.Error(w, "Failed to create order", http.StatusInternalServerError)
+		slog.ErrorContext(r.Context(), "razorpay order create failed", "error", err, "user_id", user.ID, "plan", req.PlanID, "currency", req.Currency)
+		writeError(w, http.StatusBadGateway, "payment_gateway_error", "Payment provider is unavailable — please try again in a moment.")
 		return
 	}
 
@@ -119,26 +119,30 @@ func (s *server) handleCreateOrder(w http.ResponseWriter, r *http.Request) {
 func (s *server) handleRazorpayWebhook(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		http.Error(w, "Failed to read body", http.StatusBadRequest)
+		slog.ErrorContext(r.Context(), "razorpay webhook: body read failed", "error", err)
+		writeError(w, http.StatusBadRequest, "invalid_body", "Could not read request body.")
 		return
 	}
 
 	signature := r.Header.Get("X-Razorpay-Signature")
 	expectedSignature := s.computeSignature(string(body), s.cfg.Razorpay.WebhookSecret)
 	if !hmac.Equal([]byte(signature), []byte(expectedSignature)) {
-		http.Error(w, "Invalid signature", http.StatusUnauthorized)
+		slog.WarnContext(r.Context(), "razorpay webhook: signature mismatch")
+		writeError(w, http.StatusUnauthorized, "invalid_signature", "Signature verification failed.")
 		return
 	}
 
 	var event map[string]interface{}
 	if err := json.Unmarshal(body, &event); err != nil {
-		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		slog.WarnContext(r.Context(), "razorpay webhook: invalid JSON", "error", err)
+		writeError(w, http.StatusBadRequest, "invalid_json", "Body is not valid JSON.")
 		return
 	}
 
 	eventType, ok := event["event"].(string)
 	if !ok {
-		http.Error(w, "No event type", http.StatusBadRequest)
+		slog.WarnContext(r.Context(), "razorpay webhook: missing event type")
+		writeError(w, http.StatusBadRequest, "missing_event", "Payload has no 'event' field.")
 		return
 	}
 
@@ -161,8 +165,8 @@ func (s *server) handleRazorpayWebhook(w http.ResponseWriter, r *http.Request) {
 		paymentID,
 	)
 	if err != nil {
-		slog.Error("webhook dedup insert failed", "error", err, "payment_id", paymentID)
-		http.Error(w, "db error", http.StatusInternalServerError)
+		slog.ErrorContext(r.Context(), "webhook dedup insert failed", "error", err, "payment_id", paymentID)
+		writeError(w, http.StatusInternalServerError, "internal_error", "Could not process webhook — please retry.")
 		return
 	}
 	rows, _ := res.RowsAffected()
@@ -290,31 +294,36 @@ func (s *server) computeSignature(payload, secret string) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
+// Deprecated shim. Prefer POST /api/me/claim {token}. Kept so existing
+// pricing-page deep links keep working.
 func (s *server) handleMigrateResource(w http.ResponseWriter, r *http.Request) {
 	user, err := s.getUserFromRequest(r)
 	if err != nil {
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		writeError(w, http.StatusUnauthorized, "unauthorized", "Sign in required.")
 		return
 	}
 
 	tokenStr := r.URL.Query().Get("token")
 	if tokenStr == "" {
-		http.Error(w, "No token", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "missing_token", "Pass ?token=<uuid>.")
 		return
 	}
 
 	token, err := uuid.Parse(tokenStr)
 	if err != nil {
-		http.Error(w, "Invalid token", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "invalid_token", "token must be a UUID.")
 		return
 	}
 
-	// Update resources with this token to migrated_to_user_id
-	_, err = s.db.Exec("UPDATE resources SET migrated_to_user_id = $1, tier = 'paid', expires_at = NULL WHERE token = $2 AND migrated_to_user_id IS NULL", user.ID, token)
-	if err != nil {
-		http.Error(w, "Failed to migrate", http.StatusInternalServerError)
+	if _, err = s.db.Exec(
+		`UPDATE resources SET migrated_to_user_id = $1, tier = 'paid', expires_at = NULL
+		 WHERE token = $2 AND migrated_to_user_id IS NULL`,
+		user.ID, token,
+	); err != nil {
+		slog.ErrorContext(r.Context(), "migrate: update failed", "error", err, "user_id", user.ID, "token", token)
+		writeError(w, http.StatusInternalServerError, "internal_error", "Could not claim the token — please retry.")
 		return
 	}
 
-	w.WriteHeader(http.StatusOK)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "token": token.String()})
 }

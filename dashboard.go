@@ -24,7 +24,7 @@ type Resource struct {
 func (s *server) handleGetResources(w http.ResponseWriter, r *http.Request) {
 	user, err := s.getUserFromRequest(r)
 	if err != nil {
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		writeError(w, http.StatusUnauthorized, "unauthorized", "Sign in required.")
 		return
 	}
 
@@ -34,7 +34,8 @@ func (s *server) handleGetResources(w http.ResponseWriter, r *http.Request) {
 		WHERE migrated_to_user_id = $1 OR (token IN (SELECT token FROM resources WHERE migrated_to_user_id = $1))
 		ORDER BY created_at DESC`, user.ID)
 	if err != nil {
-		http.Error(w, "Failed to query resources", http.StatusInternalServerError)
+		slog.ErrorContext(r.Context(), "resources: query failed", "error", err, "user_id", user.ID)
+		writeError(w, http.StatusInternalServerError, "internal_error", "Could not load your resources — please retry.")
 		return
 	}
 	defer rows.Close()
@@ -90,18 +91,18 @@ func (s *server) handleClaimToken(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err != nil || user == nil {
-		writeJSON(w, http.StatusUnauthorized, map[string]any{"ok": false, "error": "unauthorized"})
+		writeError(w, http.StatusUnauthorized, "unauthorized", "Sign in required.")
 		return
 	}
 
 	var req claimRequest
 	if derr := json.NewDecoder(r.Body).Decode(&req); derr != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "invalid_body"})
+		writeError(w, http.StatusBadRequest, "invalid_body", "Request body must be JSON with a 'token' field.")
 		return
 	}
 	tokenUUID, perr := uuid.Parse(strings.TrimSpace(req.Token))
 	if perr != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "invalid_token", "message": "token must be a UUID"})
+		writeError(w, http.StatusBadRequest, "invalid_token", "token must be a UUID.")
 		return
 	}
 
@@ -121,15 +122,15 @@ func (s *server) handleClaimToken(w http.ResponseWriter, r *http.Request) {
 		 FROM resources WHERE token = $1`, tokenUUID,
 	).Scan(&id, &ownerID, &resourceType, &name, &status, &tier, &connectionURL)
 	if err != nil {
-		writeJSON(w, http.StatusNotFound, map[string]any{"ok": false, "error": "not_found"})
+		writeError(w, http.StatusNotFound, "not_found", "No resource with that token.")
 		return
 	}
 	if status != "active" {
-		writeJSON(w, http.StatusGone, map[string]any{"ok": false, "error": "resource_expired"})
+		writeError(w, http.StatusGone, "resource_expired", "This resource has expired — provision a new one.")
 		return
 	}
 	if ownerID != nil && *ownerID != user.ID {
-		writeJSON(w, http.StatusNotFound, map[string]any{"ok": false, "error": "not_found"})
+		writeError(w, http.StatusNotFound, "not_found", "No resource with that token.")
 		return
 	}
 
@@ -158,8 +159,8 @@ func (s *server) handleClaimToken(w http.ResponseWriter, r *http.Request) {
 		)
 	}
 	if qerr != nil {
-		slog.Error("claim: update failed", "error", qerr, "user_id", user.ID, "token", tokenUUID)
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "update_failed"})
+		slog.ErrorContext(r.Context(), "claim: update failed", "error", qerr, "user_id", user.ID, "token", tokenUUID)
+		writeError(w, http.StatusInternalServerError, "internal_error", "Could not claim the token — please retry.")
 		return
 	}
 

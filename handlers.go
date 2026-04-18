@@ -397,3 +397,15 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(v)
 }
+
+// writeError emits the standard JSON error shape. `code` is a stable
+// machine-readable identifier (snake_case); `message` is a short, SAFE
+// human-readable string — never embed `err.Error()` or internal detail.
+// Log the real error with slog before calling this.
+func writeError(w http.ResponseWriter, status int, code, message string) {
+	writeJSON(w, status, map[string]any{
+		"ok":      false,
+		"error":   code,
+		"message": message,
+	})
+}

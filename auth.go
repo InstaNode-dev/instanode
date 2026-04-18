@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"time"
@@ -12,6 +13,18 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 )
+
+// oauthFail logs the real error and redirects the user back to the marketing
+// site's /start page with a short, safe error code in the query string. The
+// internal cause stays in slog — never exposed to the caller.
+func (s *server) oauthFail(w http.ResponseWriter, r *http.Request, code string, err error) {
+	if err != nil {
+		slog.ErrorContext(r.Context(), "oauth: "+code, "error", err)
+	} else {
+		slog.WarnContext(r.Context(), "oauth: "+code)
+	}
+	http.Redirect(w, r, "https://instanode.dev/start?error="+url.QueryEscape(code), http.StatusFound)
+}
 
 type User struct {
 	ID                  uuid.UUID  `json:"id"`
@@ -102,7 +115,7 @@ func (s *server) handleGitHubCallback(w http.ResponseWriter, r *http.Request) {
 	// Verify state
 	cookie, err := r.Cookie("oauth_state")
 	if err != nil || cookie.Value != state {
-		http.Error(w, "Invalid state", http.StatusBadRequest)
+		s.oauthFail(w, r, "invalid_state", err)
 		return
 	}
 
@@ -115,26 +128,26 @@ func (s *server) handleGitHubCallback(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := http.PostForm("https://github.com/login/oauth/access_token", data)
 	if err != nil {
-		http.Error(w, "Failed to get access token", http.StatusInternalServerError)
+		s.oauthFail(w, r, "token_exchange_failed", err)
 		return
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		http.Error(w, "Failed to read response", http.StatusInternalServerError)
+		s.oauthFail(w, r, "token_read_failed", err)
 		return
 	}
 
 	values, err := url.ParseQuery(string(body))
 	if err != nil {
-		http.Error(w, "Failed to parse response", http.StatusInternalServerError)
+		s.oauthFail(w, r, "token_parse_failed", err)
 		return
 	}
 
 	accessToken := values.Get("access_token")
 	if accessToken == "" {
-		http.Error(w, "No access token", http.StatusInternalServerError)
+		s.oauthFail(w, r, "no_access_token", nil)
 		return
 	}
 
@@ -146,7 +159,7 @@ func (s *server) handleGitHubCallback(w http.ResponseWriter, r *http.Request) {
 	client := &http.Client{}
 	userResp, err := client.Do(req)
 	if err != nil {
-		http.Error(w, "Failed to get user info", http.StatusInternalServerError)
+		s.oauthFail(w, r, "user_fetch_failed", err)
 		return
 	}
 	defer userResp.Body.Close()
@@ -157,7 +170,7 @@ func (s *server) handleGitHubCallback(w http.ResponseWriter, r *http.Request) {
 		Login string `json:"login"`
 	}
 	if err := json.NewDecoder(userResp.Body).Decode(&githubUser); err != nil {
-		http.Error(w, "Failed to decode user info", http.StatusInternalServerError)
+		s.oauthFail(w, r, "user_decode_failed", err)
 		return
 	}
 
@@ -190,14 +203,14 @@ func (s *server) handleGitHubCallback(w http.ResponseWriter, r *http.Request) {
 		ON CONFLICT (github_id) DO UPDATE SET email = EXCLUDED.email
 		RETURNING id`, githubUser.ID, githubUser.Email).Scan(&userID)
 	if err != nil {
-		http.Error(w, "Failed to create user", http.StatusInternalServerError)
+		s.oauthFail(w, r, "user_upsert_failed", err)
 		return
 	}
 
 	// Generate JWT
 	token, err := s.generateJWT(userID)
 	if err != nil {
-		http.Error(w, "Failed to generate token", http.StatusInternalServerError)
+		s.oauthFail(w, r, "jwt_generate_failed", err)
 		return
 	}
 
@@ -237,8 +250,9 @@ func (s *server) handleLogout(w http.ResponseWriter, r *http.Request) {
 func (s *server) handleMe(w http.ResponseWriter, r *http.Request) {
 	user, err := s.getUserFromRequest(r)
 	if err != nil {
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		writeError(w, http.StatusUnauthorized, "unauthorized", "Sign in required.")
 		return
 	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	json.NewEncoder(w).Encode(user)
 }
