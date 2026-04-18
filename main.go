@@ -75,7 +75,9 @@ func main() {
 		opts = &redis.Options{Addr: "localhost:0"}
 	}
 	rdb := redis.NewClient(opts)
-	if err := rdb.Ping(context.Background()).Err(); err != nil {
+	ctxR, cancelR := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelR()
+	if err := rdb.Ping(ctxR).Err(); err != nil {
 		slog.Warn("redis unreachable — rate limiting and webhooks will be degraded", "error", err)
 	}
 
@@ -134,6 +136,7 @@ func main() {
 		slog.Info("instant-lite starting", "port", cfg.Server.Port, "base_url", cfg.Server.BaseURL)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			slog.Error("server failed", "error", err)
+			fmt.Fprintf(os.Stderr, "FATAL: server failed: %v\n", err)
 			os.Exit(1)
 		}
 	}()

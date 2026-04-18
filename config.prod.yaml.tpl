@@ -4,8 +4,8 @@
 server:
   port: "8080"
   base_url: "${APP_URL}"
-  read_timeout: "10s"
-  write_timeout: "30s"
+  read_timeout: "30s"
+  write_timeout: "60s"
   idle_timeout: "120s"
 
 database:
