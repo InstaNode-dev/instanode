@@ -22,8 +22,8 @@ type Resource struct {
 }
 
 func (s *server) handleGetResources(w http.ResponseWriter, r *http.Request) {
-	user, err := s.getUserFromRequest(r)
-	if err != nil {
+	user := s.authUser(r)
+	if user == nil {
 		writeError(w, http.StatusUnauthorized, "unauthorized", "Sign in required.")
 		return
 	}

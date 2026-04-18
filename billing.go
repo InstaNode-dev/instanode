@@ -48,8 +48,8 @@ var planPricing = map[string]map[string]int{
 }
 
 func (s *server) handleCreateOrder(w http.ResponseWriter, r *http.Request) {
-	user, err := s.getUserFromRequest(r)
-	if err != nil {
+	user := s.authUser(r)
+	if user == nil {
 		writeError(w, http.StatusUnauthorized, "unauthorized", "Sign in required.")
 		return
 	}
@@ -297,8 +297,8 @@ func (s *server) computeSignature(payload, secret string) string {
 // Deprecated shim. Prefer POST /api/me/claim {token}. Kept so existing
 // pricing-page deep links keep working.
 func (s *server) handleMigrateResource(w http.ResponseWriter, r *http.Request) {
-	user, err := s.getUserFromRequest(r)
-	if err != nil {
+	user := s.authUser(r)
+	if user == nil {
 		writeError(w, http.StatusUnauthorized, "unauthorized", "Sign in required.")
 		return
 	}
