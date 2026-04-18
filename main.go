@@ -23,6 +23,9 @@ import (
 //go:embed llms.txt
 var llmsTxt []byte
 
+//go:embed schema.sql
+var schemaSQL string
+
 type server struct {
 	db        *sql.DB
 	rdb       *redis.Client
@@ -58,6 +61,13 @@ func main() {
 	if err := db.PingContext(ctx); err != nil {
 		slog.Error("platform database unreachable", "error", err)
 		fmt.Fprintf(os.Stderr, "FATAL: platform database unreachable: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Make sure schemas are fully instantiated natively inside App Platform
+	if _, err := db.ExecContext(ctx, schemaSQL); err != nil {
+		slog.Error("platform database schema init failed", "error", err)
+		fmt.Fprintf(os.Stderr, "FATAL: schema init failed: %v\n", err)
 		os.Exit(1)
 	}
 
