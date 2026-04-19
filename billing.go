@@ -295,7 +295,9 @@ func (s *server) computeSignature(payload, secret string) string {
 }
 
 // Deprecated shim. Prefer POST /api/me/claim {token}. Kept so existing
-// pricing-page deep links keep working.
+// pricing-page deep links keep working. Respects the same tier rules as
+// /api/me/claim — a FREE user calling this should NOT have their resource
+// silently promoted to tier='paid' (the old behaviour).
 func (s *server) handleMigrateResource(w http.ResponseWriter, r *http.Request) {
 	user := s.authUser(r)
 	if user == nil {
@@ -315,11 +317,21 @@ func (s *server) handleMigrateResource(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if _, err = s.db.Exec(
-		`UPDATE resources SET migrated_to_user_id = $1, tier = 'paid', expires_at = NULL
-		 WHERE token = $2 AND migrated_to_user_id IS NULL`,
-		user.ID, token,
-	); err != nil {
+	if user.PlanTier == "paid" {
+		_, err = s.db.Exec(
+			`UPDATE resources SET migrated_to_user_id = $1, tier = 'paid', expires_at = NULL
+			 WHERE token = $2 AND migrated_to_user_id IS NULL`,
+			user.ID, token,
+		)
+	} else {
+		// Free user: claim ownership only. Tier and expiry stay as-is.
+		_, err = s.db.Exec(
+			`UPDATE resources SET migrated_to_user_id = $1
+			 WHERE token = $2 AND migrated_to_user_id IS NULL`,
+			user.ID, token,
+		)
+	}
+	if err != nil {
 		slog.ErrorContext(r.Context(), "migrate: update failed", "error", err, "user_id", user.ID, "token", token)
 		writeError(w, http.StatusInternalServerError, "internal_error", "Could not claim the token — please retry.")
 		return

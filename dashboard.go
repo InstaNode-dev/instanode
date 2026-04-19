@@ -98,20 +98,24 @@ func (s *server) handleDeleteResource(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "unauthorized", "Sign in required.")
 		return
 	}
-	if user.PlanTier != "paid" {
-		writeJSON(w, http.StatusForbidden, map[string]any{
-			"ok":          false,
-			"error":       "paid_tier_only",
-			"message":     "Delete is a Developer-tier feature. Free-tier resources auto-expire in 24 hours — upgrade to remove them on demand.",
-			"upgrade_url": "https://instanode.dev/pricing.html",
-		})
-		return
-	}
-
 	tokenStr := r.PathValue("token")
 	tokenUUID, perr := uuid.Parse(strings.TrimSpace(tokenStr))
 	if perr != nil {
 		writeError(w, http.StatusBadRequest, "invalid_token", "token must be a UUID.")
+		return
+	}
+
+	if user.PlanTier != "paid" {
+		// Include the resource's own token in the upgrade URL so that when
+		// the user pays, the webhook (`notes.token` path) atomically claims
+		// THIS resource into their account in addition to flipping them to
+		// paid — so after upgrade the delete can actually succeed.
+		writeJSON(w, http.StatusForbidden, map[string]any{
+			"ok":          false,
+			"error":       "paid_tier_only",
+			"message":     "Delete is a Developer-tier feature. Free-tier resources auto-expire in 24 hours — upgrade to remove them on demand.",
+			"upgrade_url": "https://instanode.dev/pricing.html?token=" + tokenUUID.String(),
+		})
 		return
 	}
 

@@ -365,6 +365,25 @@
         }
       }
     },
+    "/billing/migrate": {
+      "post": {
+        "tags": ["billing"],
+        "summary": "Legacy shim to claim a token into the authenticated account",
+        "description": "Deprecated. Prefer `POST /api/me/claim` with `{token}` in the body. Kept so pricing-page deep links in the wild keep working. Respects the same tier rules — a free user calling this path only gets ownership linked, never a silent tier upgrade.",
+        "deprecated": true,
+        "operationId": "migrateResource",
+        "security": [{"sessionCookie": []}, {"bearerAuth": []}],
+        "parameters": [
+          {"name": "token", "in": "query", "required": true, "schema": {"type": "string", "format": "uuid"}}
+        ],
+        "responses": {
+          "200": {"description": "Migration recorded."},
+          "400": {"description": "Missing / malformed token."},
+          "401": {"description": "No session cookie and no valid bearer."},
+          "500": {"description": "Database error."}
+        }
+      }
+    },
     "/webhooks/razorpay": {
       "post": {
         "tags": ["billing"],
@@ -464,17 +483,19 @@
           }
         ],
         "responses": {
-          "200": {
-            "description": "Resource deleted.",
+          "202": {
+            "description": "Soft-deleted. The row is marked status='deleted' and the underlying database is dropped asynchronously by the reaper (typically within 5 minutes).",
             "content": {
               "application/json": {
                 "schema": {
                   "type": "object",
-                  "required": ["ok", "id", "token"],
+                  "required": ["ok", "id", "token", "status"],
                   "properties": {
-                    "ok":    {"type": "boolean"},
-                    "id":    {"type": "string", "format": "uuid"},
-                    "token": {"type": "string", "format": "uuid"}
+                    "ok":      {"type": "boolean"},
+                    "id":      {"type": "string", "format": "uuid"},
+                    "token":   {"type": "string", "format": "uuid"},
+                    "status":  {"type": "string", "example": "deleted"},
+                    "message": {"type": "string"}
                   }
                 }
               }
@@ -483,7 +504,7 @@
           "400": {"description": "Malformed token."},
           "401": {"description": "No session cookie and no valid bearer."},
           "403": {
-            "description": "Caller is on the free tier. Response includes an `upgrade_url` linking to the pricing page.",
+            "description": "Caller is on the free tier. Response includes an `upgrade_url` (with the resource's token pre-attached) linking to the pricing page.",
             "content": {
               "application/json": {
                 "schema": {

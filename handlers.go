@@ -144,6 +144,7 @@ func (s *server) handleNewDB(w http.ResponseWriter, r *http.Request) {
 	if isPaid {
 		resp["note"] = "Permanent database (Developer tier). Manage it at " + s.baseURL + "/dashboard.html"
 	} else {
+		resp["expires_at"] = expiresAt
 		resp["limits"].(map[string]any)["expires_in"] = s.cfg.Limits.AnonTTL
 		resp["note"] = fmt.Sprintf("Works now. Keep it forever (free 14-day trial): %s/start?token=%s", s.baseURL, token.String())
 	}
@@ -247,7 +248,7 @@ func (s *server) handleNewWebhook(w http.ResponseWriter, r *http.Request) {
 	} else {
 		resp["expires_at"] = expiresAt
 		resp["limits"].(map[string]any)["expires_in"] = s.cfg.Limits.AnonTTL
-		resp["note"] = fmt.Sprintf("Works now. Keep it forever (free 14-day trial): %s/start", s.baseURL)
+		resp["note"] = fmt.Sprintf("Works now. Keep it forever (free 14-day trial): %s/start?token=%s", s.baseURL, token.String())
 	}
 	writeJSON(w, http.StatusCreated, resp)
 }
