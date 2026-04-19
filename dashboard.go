@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -22,13 +23,17 @@ type Resource struct {
 }
 
 func (s *server) handleGetResources(w http.ResponseWriter, r *http.Request) {
+	// Bound platform-PG query to 5s.
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
 	user := s.authUser(r)
 	if user == nil {
 		writeError(w, http.StatusUnauthorized, "unauthorized", "Sign in required.")
 		return
 	}
 
-	rows, err := s.db.Query(`
+	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, token, resource_type, name, tier, status, created_at, expires_at
 		FROM resources
 		WHERE migrated_to_user_id = $1
@@ -93,6 +98,10 @@ func (s *server) handleGetAPIToken(w http.ResponseWriter, r *http.Request) {
 // status='deleted' + deleted_at=NOW() has been written; the resource
 // immediately stops appearing on the user's dashboard.
 func (s *server) handleDeleteResource(w http.ResponseWriter, r *http.Request) {
+	// Bound platform-PG UPDATE ... RETURNING to 5s.
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
 	user := s.authUser(r)
 	if user == nil {
 		writeError(w, http.StatusUnauthorized, "unauthorized", "Sign in required.")
@@ -122,7 +131,7 @@ func (s *server) handleDeleteResource(w http.ResponseWriter, r *http.Request) {
 	// Single UPDATE handles ownership, status check, and soft-delete in one
 	// round-trip. RETURNING tells us whether anything was actually updated.
 	var id uuid.UUID
-	err := s.db.QueryRow(
+	err := s.db.QueryRowContext(ctx,
 		`UPDATE resources
 		 SET status = 'deleted', deleted_at = NOW()
 		 WHERE token = $1
@@ -168,6 +177,10 @@ type claimRequest struct {
 }
 
 func (s *server) handleClaimToken(w http.ResponseWriter, r *http.Request) {
+	// Bound platform-PG SELECT + UPDATE to 5s.
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
 	user := s.authUser(r)
 	if user == nil {
 		writeError(w, http.StatusUnauthorized, "unauthorized", "Sign in required.")
@@ -196,7 +209,7 @@ func (s *server) handleClaimToken(w http.ResponseWriter, r *http.Request) {
 		tier          string
 		connectionURL string
 	)
-	if err := s.db.QueryRow(
+	if err := s.db.QueryRowContext(ctx,
 		`SELECT id, migrated_to_user_id, resource_type, name, status, tier, connection_url
 		 FROM resources WHERE token = $1`, tokenUUID,
 	).Scan(&id, &ownerID, &resourceType, &name, &status, &tier, &connectionURL); err != nil {
@@ -224,13 +237,13 @@ func (s *server) handleClaimToken(w http.ResponseWriter, r *http.Request) {
 
 	var qerr error
 	if clearExpiry {
-		_, qerr = s.db.Exec(
+		_, qerr = s.db.ExecContext(ctx,
 			`UPDATE resources SET migrated_to_user_id = $1, tier = $2, expires_at = NULL
 			 WHERE token = $3 AND status = 'active'`,
 			user.ID, newTier, tokenUUID,
 		)
 	} else {
-		_, qerr = s.db.Exec(
+		_, qerr = s.db.ExecContext(ctx,
 			`UPDATE resources SET migrated_to_user_id = $1
 			 WHERE token = $2 AND status = 'active'`,
 			user.ID, tokenUUID,

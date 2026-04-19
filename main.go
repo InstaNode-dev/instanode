@@ -140,6 +140,11 @@ func main() {
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "service": "instant-lite"})
 	})
+	// Readiness: pings every downstream dependency (platform PG, Valkey,
+	// customer PG via PgBouncer). Used by external monitoring — NOT yet
+	// wired as DO Apps' healthz probe (that replacement happens via a
+	// manual spec.yaml edit after this endpoint is reviewed).
+	mux.HandleFunc("GET /readyz", s.handleReadyz)
 
 	// Machine-readable docs
 	mux.HandleFunc("GET /llms.txt", func(w http.ResponseWriter, r *http.Request) {
@@ -242,13 +247,87 @@ func panicRecoveryMiddleware(next http.Handler) http.Handler {
 func (s *server) traceEnrichmentMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fp := s.fingerprint(r)
-		
+
 		// Grab the OpenTelemetry span from the request context
 		span := trace.SpanFromContext(r.Context())
 		if span.SpanContext().IsValid() {
 			span.SetAttributes(attribute.String("user.id", fp))
 		}
-		
+
 		next.ServeHTTP(w, r)
+	})
+}
+
+// handleReadyz reports 200 only when every downstream dependency the API
+// actually needs to serve a real request is reachable right now: platform
+// PG, Valkey, and customer PG (via PgBouncer). Each probe is capped at 500ms
+// so a single hung dependency can't stall a readiness check. On failure we
+// return 503 with a short, machine-readable `error` code (no internal
+// detail) and log the first failing component with slog.ErrorContext so NR
+// picks it up.
+//
+// NOT registered as the DO Apps healthz probe automatically — operator wires
+// that in spec.yaml by hand after review.
+func (s *server) handleReadyz(w http.ResponseWriter, r *http.Request) {
+	checks := map[string]string{
+		"platform_db": "ok",
+		"redis":       "ok",
+		"customer_db": "ok",
+	}
+	var firstFailComponent, firstFailCode string
+	var firstFailErr error
+
+	recordFail := func(component, code string, err error) {
+		checks[component] = code
+		if firstFailComponent == "" {
+			firstFailComponent = component
+			firstFailCode = code
+			firstFailErr = err
+		}
+	}
+
+	// Platform PG — 500ms.
+	pgCtx, pgCancel := context.WithTimeout(r.Context(), 500*time.Millisecond)
+	if err := s.db.PingContext(pgCtx); err != nil {
+		recordFail("platform_db", "ping_failed", err)
+	}
+	pgCancel()
+
+	// Valkey — 500ms.
+	rCtx, rCancel := context.WithTimeout(r.Context(), 500*time.Millisecond)
+	if err := s.rdb.Ping(rCtx).Err(); err != nil {
+		recordFail("redis", "ping_failed", err)
+	}
+	rCancel()
+
+	// Customer PG via PgBouncer — 500ms. Open + close per probe; the
+	// endpoint is called infrequently enough that caching a dedicated
+	// *sql.DB is not worth the extra moving part.
+	custConn, cerr := sql.Open("postgres", s.custDBURL)
+	if cerr != nil {
+		recordFail("customer_db", "open_failed", cerr)
+	} else {
+		cCtx, cCancel := context.WithTimeout(r.Context(), 500*time.Millisecond)
+		if err := custConn.PingContext(cCtx); err != nil {
+			recordFail("customer_db", "ping_failed", err)
+		}
+		cCancel()
+		custConn.Close()
+	}
+
+	if firstFailComponent != "" {
+		slog.ErrorContext(r.Context(), "readyz: dependency unreachable",
+			"component", firstFailComponent, "code", firstFailCode, "error", firstFailErr)
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+			"ok":     false,
+			"checks": checks,
+			"error":  firstFailComponent + "_" + firstFailCode,
+		})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":     true,
+		"checks": checks,
 	})
 }

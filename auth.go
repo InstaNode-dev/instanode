@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
@@ -90,8 +91,12 @@ func (s *server) authUser(r *http.Request) *User {
 	if perr != nil {
 		return nil
 	}
+	// Bound this platform-PG lookup to 5s derived from the request context,
+	// so a stuck platform-PG can't hang the whole request via auth.
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
 	var user User
-	qerr := s.db.QueryRow(
+	qerr := s.db.QueryRowContext(ctx,
 		`SELECT id, github_id, email, razorpay_customer_id, plan_tier, plan_period, plan_paid_at, created_at
 		 FROM users WHERE id = $1`, claims.UserID,
 	).Scan(&user.ID, &user.GitHubID, &user.Email, &user.RazorpayCustomerID,
@@ -111,8 +116,11 @@ func (s *server) getUserFromRequest(r *http.Request) (*User, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Bound this platform-PG lookup to 5s derived from the request context.
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
 	var user User
-	err = s.db.QueryRow(
+	err = s.db.QueryRowContext(ctx,
 		`SELECT id, github_id, email, razorpay_customer_id, plan_tier, plan_period, plan_paid_at, created_at
 		 FROM users WHERE id = $1`, claims.UserID,
 	).Scan(&user.ID, &user.GitHubID, &user.Email, &user.RazorpayCustomerID,
@@ -231,9 +239,11 @@ func (s *server) handleGitHubCallback(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Upsert user
+	// Upsert user. Bound platform-PG INSERT to 5s.
+	upsertCtx, upsertCancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer upsertCancel()
 	var userID uuid.UUID
-	err = s.db.QueryRow(`
+	err = s.db.QueryRowContext(upsertCtx, `
 		INSERT INTO users (github_id, email) VALUES ($1, $2)
 		ON CONFLICT (github_id) DO UPDATE SET email = EXCLUDED.email
 		RETURNING id`, githubUser.ID, githubUser.Email).Scan(&userID)

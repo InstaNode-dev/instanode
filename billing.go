@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
@@ -8,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/razorpay/razorpay-go"
@@ -48,6 +50,10 @@ var planPricing = map[string]map[string]int{
 }
 
 func (s *server) handleCreateOrder(w http.ResponseWriter, r *http.Request) {
+	// Note: no direct platform-PG calls here; authUser handles its own 5s
+	// timeout internally. The only external call is client.Order.Create
+	// below, which the Razorpay Go SDK runs without context support — see
+	// comment at that call site.
 	user := s.authUser(r)
 	if user == nil {
 		writeError(w, http.StatusUnauthorized, "unauthorized", "Sign in required.")
@@ -95,6 +101,11 @@ func (s *server) handleCreateOrder(w http.ResponseWriter, r *http.Request) {
 		"notes":           notes,
 	}
 
+	// LIMITATION: the Razorpay Go SDK does not accept a context.Context here,
+	// so we cannot enforce our 5s request budget on this call. It will stall
+	// up to Razorpay's own SDK-internal HTTP timeout (currently unbounded in
+	// razorpay-go). If this becomes a production hang risk, wrap with a
+	// channel + time.After pattern and abandon the goroutine on timeout.
 	order, err := client.Order.Create(data, nil)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "razorpay order create failed", "error", err, "user_id", user.ID, "plan", req.PlanID, "currency", req.Currency)
@@ -117,6 +128,12 @@ func (s *server) handleCreateOrder(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) handleRazorpayWebhook(w http.ResponseWriter, r *http.Request) {
+	// Bound platform-PG dedup insert + downstream handlePaymentCaptured calls
+	// to 5s so a stuck platform-PG can't hang this request. We intentionally
+	// pick the request's 5s budget rather than the full Razorpay retry window
+	// — Razorpay will retry on our 500, which is safer than a hung handler.
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "razorpay webhook: body read failed", "error", err)
@@ -160,7 +177,7 @@ func (s *server) handleRazorpayWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Idempotency: record the payment id; if it was already seen, no-op.
-	res, err := s.db.Exec(
+	res, err := s.db.ExecContext(ctx,
 		"INSERT INTO processed_webhooks (event_id) VALUES ($1) ON CONFLICT (event_id) DO NOTHING",
 		paymentID,
 	)
@@ -178,7 +195,7 @@ func (s *server) handleRazorpayWebhook(w http.ResponseWriter, r *http.Request) {
 
 	switch eventType {
 	case "payment.captured":
-		s.handlePaymentCaptured(entity, paymentID)
+		s.handlePaymentCaptured(ctx, entity, paymentID)
 	case "payment.failed":
 		orderID, _ := entity["order_id"].(string)
 		reason, _ := entity["error_description"].(string)
@@ -196,7 +213,8 @@ func (s *server) handleRazorpayWebhook(w http.ResponseWriter, r *http.Request) {
 // handlePaymentCaptured promotes the paying user's resources to the paid tier.
 // Errors are logged but not returned — we've already recorded the payment id as
 // processed, so returning 200 is correct; operator alerts pick up the log.
-func (s *server) handlePaymentCaptured(entity map[string]interface{}, paymentID string) {
+// ctx is the 5s-bounded request context from handleRazorpayWebhook.
+func (s *server) handlePaymentCaptured(ctx context.Context, entity map[string]interface{}, paymentID string) {
 	orderID, _ := entity["order_id"].(string)
 	if orderID == "" {
 		slog.Error("payment.captured missing order_id", "payment_id", paymentID)
@@ -240,7 +258,7 @@ func (s *server) handlePaymentCaptured(entity map[string]interface{}, paymentID 
 	// payment entity carried a customer_id — in test mode it often doesn't).
 	// plan_paid_at records the most recent successful charge so the dashboard
 	// can show when the next renewal is expected.
-	if _, err := s.db.Exec(
+	if _, err := s.db.ExecContext(ctx,
 		"UPDATE users SET plan_tier = 'paid', plan_period = $1, plan_paid_at = NOW() WHERE id = $2",
 		period, userID,
 	); err != nil {
@@ -248,7 +266,7 @@ func (s *server) handlePaymentCaptured(entity map[string]interface{}, paymentID 
 	}
 
 	if customerID != "" {
-		if _, err := s.db.Exec(
+		if _, err := s.db.ExecContext(ctx,
 			"UPDATE users SET razorpay_customer_id = $1 WHERE id = $2",
 			customerID, userID,
 		); err != nil {
@@ -260,7 +278,7 @@ func (s *server) handlePaymentCaptured(entity map[string]interface{}, paymentID 
 	// resource atomically. Keeps the "pay before login" path working.
 	if tokenStr, _ := notes["token"].(string); tokenStr != "" {
 		if tokenUUID, err := uuid.Parse(tokenStr); err == nil {
-			if _, err := s.db.Exec(
+			if _, err := s.db.ExecContext(ctx,
 				`UPDATE resources SET migrated_to_user_id = $1, tier = 'paid', expires_at = NULL
 				 WHERE token = $2 AND status = 'active'`,
 				userID, tokenUUID,
@@ -270,7 +288,7 @@ func (s *server) handlePaymentCaptured(entity map[string]interface{}, paymentID 
 		}
 	}
 
-	res, err := s.db.Exec(
+	res, err := s.db.ExecContext(ctx,
 		"UPDATE resources SET tier = 'paid', expires_at = NULL WHERE migrated_to_user_id = $1 AND status = 'active'",
 		userID,
 	)
@@ -299,6 +317,10 @@ func (s *server) computeSignature(payload, secret string) string {
 // /api/me/claim — a FREE user calling this should NOT have their resource
 // silently promoted to tier='paid' (the old behaviour).
 func (s *server) handleMigrateResource(w http.ResponseWriter, r *http.Request) {
+	// Bound platform-PG UPDATE to 5s.
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
 	user := s.authUser(r)
 	if user == nil {
 		writeError(w, http.StatusUnauthorized, "unauthorized", "Sign in required.")
@@ -318,14 +340,14 @@ func (s *server) handleMigrateResource(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if user.PlanTier == "paid" {
-		_, err = s.db.Exec(
+		_, err = s.db.ExecContext(ctx,
 			`UPDATE resources SET migrated_to_user_id = $1, tier = 'paid', expires_at = NULL
 			 WHERE token = $2 AND migrated_to_user_id IS NULL`,
 			user.ID, token,
 		)
 	} else {
 		// Free user: claim ownership only. Tier and expiry stay as-is.
-		_, err = s.db.Exec(
+		_, err = s.db.ExecContext(ctx,
 			`UPDATE resources SET migrated_to_user_id = $1
 			 WHERE token = $2 AND migrated_to_user_id IS NULL`,
 			user.ID, token,

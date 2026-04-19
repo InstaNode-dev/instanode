@@ -50,7 +50,11 @@ func parseProvisionRequest(r *http.Request) (string, string) {
 }
 
 func (s *server) handleNewDB(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
+	// Bound every platform-PG / Redis call in this handler to 5s so a stuck
+	// downstream (e.g. DO managed-PG firewall change) can't hang the App
+	// Platform instance indefinitely.
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
 	fp := s.fingerprint(r)
 
 	name, errMsg := parseProvisionRequest(r)
@@ -101,7 +105,12 @@ func (s *server) handleNewDB(w http.ResponseWriter, r *http.Request) {
 		expiresAt = &t
 	}
 
-	connURL, err := provisionPostgres(ctx, s.custDBURL, token.String(), s.cfg)
+	// Customer-PG round trip (CREATE USER + CREATE DATABASE) is slower than
+	// a platform query, so it gets its own 10s budget instead of inheriting
+	// the 5s request-scoped ctx above.
+	provCtx, provCancel := context.WithTimeout(r.Context(), 10*time.Second)
+	connURL, err := provisionPostgres(provCtx, s.custDBURL, token.String(), s.cfg)
+	provCancel()
 	if err != nil {
 		slog.ErrorContext(ctx, "db provision failed", "error", err)
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
@@ -124,6 +133,21 @@ func (s *server) handleNewDB(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		slog.ErrorContext(ctx, "db resource insert failed", "error", err)
+		// Compensating cleanup: the tenant PG user + database were created by
+		// provisionPostgres above, but the resources-table INSERT failed, so
+		// nothing points at them and the reaper will never find them. Drop
+		// them now. Use a fresh context.Background() with a 10s timeout —
+		// the caller's request context may already be cancelled, but we
+		// still need this rollback to run. Log both errors for observability.
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cleanupCancel()
+		if cleanupErr := dropPostgresDB(cleanupCtx, s.custDBURL, sanitizeToken(token.String())); cleanupErr != nil {
+			slog.ErrorContext(ctx, "db provision rollback failed; orphaned tenant objects",
+				"insert_error", err, "cleanup_error", cleanupErr, "token", token.String())
+		} else {
+			slog.WarnContext(ctx, "db provision rolled back after insert failure",
+				"insert_error", err, "token", token.String())
+		}
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
 			"ok": false, "error": "internal_error", "message": "Failed to save resource",
 		})
@@ -154,7 +178,10 @@ func (s *server) handleNewDB(w http.ResponseWriter, r *http.Request) {
 // ── POST /webhook/new ───────────────────────────────────────────────────────
 
 func (s *server) handleNewWebhook(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
+	// Bound every platform-PG / Redis call in this handler to 5s so a stuck
+	// downstream can't hang the App Platform instance indefinitely.
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
 	fp := s.fingerprint(r)
 
 	name, errMsg := parseProvisionRequest(r)
@@ -256,7 +283,9 @@ func (s *server) handleNewWebhook(w http.ResponseWriter, r *http.Request) {
 // ── POST /webhook/receive/:token ────────────────────────────────────────────
 
 func (s *server) handleWebhookReceive(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
+	// Bound platform-PG lookup + Redis pipeline to 5s.
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
 	tokenStr := r.PathValue("token")
 
 	tokenUUID, err := uuid.Parse(tokenStr)
