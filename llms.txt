@@ -20,6 +20,20 @@ https://api.instanode.dev/openapi.json
 ```
 Import this URL into any OpenAPI-aware tool, MCP server, or agent framework.
 
+## MCP server
+
+Native MCP tools for Claude Code / Cursor / Windsurf / Continue, published at
+`@instanode/mcp` (https://www.npmjs.com/package/@instanode/mcp, source at
+https://github.com/InstaNode-dev/mcp). Install with:
+
+```
+claude mcp add instanode -- npx -y @instanode/mcp@latest
+```
+
+Six tools: `create_postgres`, `create_webhook`, `list_resources`,
+`claim_token`, `delete_resource`, `get_api_token`. Set `INSTANODE_TOKEN` env
+for paid-tier features (mint from the dashboard).
+
 ## Quick start
 
 Provision a Postgres database (no account, no API key — `name` is required):
