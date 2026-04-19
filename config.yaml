@@ -10,8 +10,8 @@ server:
   idle_timeout: "60s"
 
 database:
-  platform_url: "postgresql://doadmin:***REDACTED-DO-PG-DOADMIN***@instanode-platform-do-user-36074563-0.d.db.ondigitalocean.com:25060/defaultdb?sslmode=require"
-  customer_url: ""              # REQUIRED: separate customer DB connection string via CUSTOMER_DATABASE_URL
+  platform_url: ""              # REQUIRED: set via DATABASE_URL env var
+  customer_url: ""              # REQUIRED: set via CUSTOMER_DATABASE_URL env var
   max_open_conns: 20
   max_idle_conns: 5
 

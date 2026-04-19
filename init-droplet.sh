@@ -9,7 +9,7 @@ echo "Deploying Postgres 17 with pgvector..."
 docker run -d \
   --name instant-postgres \
   --restart always \
-  -e POSTGRES_PASSWORD='***REDACTED-DROPLET-PG-ROOT***' \
+  -e POSTGRES_PASSWORD="${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}" \
   -p 5432:5432 \
   ankane/pgvector:v0.6.0-pg16
 
