@@ -310,7 +310,17 @@ func (s *server) handleWebhookReceive(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	body, _ := io.ReadAll(io.LimitReader(r.Body, s.cfg.Limits.WebhookMaxBodyBytes))
+	// Global middleware already caps bodies at MaxRequestBodyBytes; tighten further
+	// for webhook receive if WebhookMaxBodyBytes is lower, otherwise inherit the cap.
+	if s.cfg.Limits.WebhookMaxBodyBytes < s.cfg.Limits.MaxRequestBodyBytes {
+		r.Body = http.MaxBytesReader(w, r.Body, s.cfg.Limits.WebhookMaxBodyBytes)
+	}
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeError(w, http.StatusRequestEntityTooLarge, "payload_too_large",
+			fmt.Sprintf("webhook body exceeds %d bytes", s.cfg.Limits.WebhookMaxBodyBytes))
+		return
+	}
 
 	headers := make(map[string]string)
 	for k, v := range r.Header {
