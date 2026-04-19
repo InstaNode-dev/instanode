@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	_ "github.com/lib/pq"
@@ -49,25 +50,30 @@ func provisionPostgres(ctx context.Context, custDBURL, token string, cfg *Config
 		}
 	}
 
-	// Enable pgvector and set storage quota on the new database.
+	// Per-DB post-create setup: pgvector, schema lockdown, statement timeout, temp file quota.
+	// pgvector is pre-installed in template1 on the customer host, so new DBs inherit it.
+	// The explicit CREATE EXTENSION call here is belt-and-suspenders for any host where
+	// template1 wasn't pre-seeded — non-fatal on its own.
 	newDBURL := replaceDBName(custDBURL, dbName)
 	newConn, err := sql.Open("postgres", newDBURL)
-	if err == nil {
-		newConn.ExecContext(ctx, "CREATE EXTENSION IF NOT EXISTS vector")
-
-		// Revoke ability to create new schemas (limits attack surface).
-		newConn.ExecContext(ctx, fmt.Sprintf("REVOKE CREATE ON DATABASE %s FROM PUBLIC", dbName))
-
-		// Set statement timeout to prevent long-running queries from hogging resources.
-		newConn.ExecContext(ctx, fmt.Sprintf("ALTER ROLE %s SET statement_timeout = '%s'", userName, cfg.Postgres.StatementTimeout))
-
-		// Set a tablespace quota isn't natively supported in Postgres, but we can
-		// enforce it by revoking temporary table creation and setting a trigger-based
-		// or periodic check. For Phase 0, we rely on the periodic reaper + monitoring.
-		// However, we CAN set a hard limit via ALTER DATABASE ... SET temp_file_limit.
-		newConn.ExecContext(ctx, fmt.Sprintf("ALTER DATABASE %s SET temp_file_limit = '%dMB'", dbName, cfg.Postgres.StorageMB*2))
-
-		newConn.Close()
+	if err != nil {
+		slog.WarnContext(ctx, "post-create setup: open conn failed (DB usable, vector may be missing)", "db", dbName, "error", err)
+	} else {
+		defer newConn.Close()
+		postCreate := []struct {
+			label string
+			stmt  string
+		}{
+			{"create_extension_vector", "CREATE EXTENSION IF NOT EXISTS vector"},
+			{"revoke_public_create", fmt.Sprintf("REVOKE CREATE ON DATABASE %s FROM PUBLIC", dbName)},
+			{"set_statement_timeout", fmt.Sprintf("ALTER ROLE %s SET statement_timeout = '%s'", userName, cfg.Postgres.StatementTimeout)},
+			{"set_temp_file_limit", fmt.Sprintf("ALTER DATABASE %s SET temp_file_limit = '%dMB'", dbName, cfg.Postgres.StorageMB*2)},
+		}
+		for _, step := range postCreate {
+			if _, err := newConn.ExecContext(ctx, step.stmt); err != nil {
+				slog.WarnContext(ctx, "post-create setup step failed", "step", step.label, "db", dbName, "error", err)
+			}
+		}
 	}
 
 	connURL := buildConnURL(custDBURL, dbName, userName, password, cfg)
