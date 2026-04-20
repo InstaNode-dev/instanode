@@ -134,6 +134,52 @@ callers receive `403 paid_tier_only` with an `upgrade_url` pointing to
 }
 ```
 
+### GET /api/me/plan
+Authenticated. Returns the caller's current plan AND the upgrade paths
+available to them — self-describing enough that an agent can subscribe
+without reading any other doc.
+
+```json
+{
+  "plan_tier": "free",
+  "plan_period": "monthly",
+  "subscription_status": null,
+  "current_period_end": null,
+  "human_label": "Free tier — resources expire in 24h",
+  "available_upgrades": [
+    {
+      "plan": "monthly",
+      "label": "Developer · Monthly",
+      "price_usd": 12,
+      "billing_interval": "month",
+      "how_to_subscribe": {
+        "method": "POST",
+        "url": "https://api.instanode.dev/billing/create-subscription",
+        "headers": {"Authorization":"Bearer <INSTANODE_TOKEN>","Content-Type":"application/json"},
+        "body": {"plan":"monthly"},
+        "response_field": "short_url",
+        "notes": "Open short_url in a browser to complete the subscription (mandate + first charge)."
+      }
+    }
+  ]
+}
+```
+
+Agent flow: call `GET /api/me/plan` → if `plan_tier != "paid"`, pick an
+entry from `available_upgrades`, issue the described POST, hand the
+returned `short_url` to the human so they can authorise the mandate.
+
+### POST /billing/create-subscription
+Authenticated. Body `{"plan": "monthly"|"annual", "token"?: "<uuid>"}`.
+Creates a Razorpay Subscription against the pre-provisioned plan and returns
+`{ "subscription_id": "...", "short_url": "...", "key_id": "...", "plan_label": "..." }`.
+The `short_url` is the hosted Razorpay page where the customer authenticates
+the mandate and pays the first cycle. Subsequent charges run automatically.
+
+### POST /billing/cancel-subscription
+Authenticated. Cancels the caller's subscription at the end of the current
+billing period — paid access continues until `current_period_end`.
+
 ### GET /auth/github/login
 Redirects to GitHub OAuth. On success, sets the `session` cookie and sends
 you to `https://instanode.dev/dashboard.html`.
@@ -141,16 +187,15 @@ you to `https://instanode.dev/dashboard.html`.
 ### POST /auth/logout
 Clears the session cookie and redirects to `https://instanode.dev/`.
 
-### POST /billing/create-order
-Authenticated. Body `{"plan_id": "developer"|"developer-annual", "currency":
-"USD"|"EUR"|"GBP"|"INR", "token"?: "<uuid>"}`. Returns a Razorpay order you
-open with Razorpay Checkout.js on the frontend.
+### POST /billing/create-order (legacy)
+Kept for backward compat with older clients. One-time charge flow; prefer
+`/billing/create-subscription` for recurring access.
 
 ### POST /webhooks/razorpay
 Razorpay webhook receiver. Verifies HMAC signature against
-`RAZORPAY_WEBHOOK_SECRET`. Promotes `users.plan_tier='paid'` on
-`payment.captured`, sets `plan_period` ('monthly'|'annual') from the order's
-notes.
+`RAZORPAY_WEBHOOK_SECRET`. Handles `subscription.activated`,
+`subscription.charged`, `subscription.halted`, `subscription.cancelled`,
+`subscription.completed`, plus legacy `payment.captured` / `payment.failed`.
 
 ## Auth for CLIs and agents
 

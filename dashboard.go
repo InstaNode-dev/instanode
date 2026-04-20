@@ -60,6 +60,86 @@ func (s *server) handleGetResources(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(resources)
 }
 
+// ── GET /api/me/plan ────────────────────────────────────────────────────────
+//
+// Dedicated plan endpoint the dashboard polls to render the big plan banner.
+// Lives separately from /auth/me so the UI can refresh just the plan block
+// after a subscribe/cancel without re-fetching the whole user/resources graph.
+//
+// human_label is a pre-formatted one-liner ready to paste into the banner —
+// dashboards don't have to re-implement the status/period/renewal stitching.
+func (s *server) handleGetPlan(w http.ResponseWriter, r *http.Request) {
+	user := s.authUser(r)
+	if user == nil {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "Sign in required.")
+		return
+	}
+
+	humanLabel := "Free tier — resources expire in 24h"
+	if user.PlanTier == "paid" {
+		periodLabel := "Monthly · $12/mo"
+		if user.PlanPeriod == "annual" {
+			periodLabel = "Annual · $120/yr"
+		}
+		subStatus := ""
+		if user.SubscriptionStatus != nil {
+			subStatus = *user.SubscriptionStatus
+		}
+		renewalPart := ""
+		if user.CurrentPeriodEnd != nil && !user.CurrentPeriodEnd.IsZero() {
+			renewalPart = " · renews " + user.CurrentPeriodEnd.Format("2006-01-02")
+			if subStatus == "cancelled" {
+				renewalPart = " · ends " + user.CurrentPeriodEnd.Format("2006-01-02")
+			}
+		}
+		humanLabel = "Developer · " + periodLabel + renewalPart
+		if subStatus == "cancelled" {
+			humanLabel += " (cancellation scheduled)"
+		} else if subStatus == "halted" {
+			humanLabel += " (payment halted — please update your card)"
+		}
+	}
+
+	// Upgrade paths surfaced for agents + UI. Each entry is a self-describing
+	// instruction (method/url/body/auth) so an LLM can subscribe without
+	// scraping any other docs. Paid users on monthly see annual as an option;
+	// annual users see only cancel (no further upgrade).
+	upgrades := []map[string]any{}
+	instruction := func(plan, label string, price int, interval string) map[string]any {
+		return map[string]any{
+			"plan":             plan,
+			"label":            label,
+			"price_usd":        price,
+			"billing_interval": interval,
+			"how_to_subscribe": map[string]any{
+				"method":            "POST",
+				"url":               "https://api.instanode.dev/billing/create-subscription",
+				"headers":           map[string]string{"Authorization": "Bearer <INSTANODE_TOKEN>", "Content-Type": "application/json"},
+				"body":              map[string]string{"plan": plan},
+				"response_field":    "short_url",
+				"notes":             "Open short_url in a browser to complete the subscription (mandate + first charge).",
+			},
+		}
+	}
+	if user.PlanTier != "paid" {
+		upgrades = append(upgrades, instruction("monthly", "Developer · Monthly", 12, "month"))
+		upgrades = append(upgrades, instruction("annual", "Developer · Annual (2 months free)", 120, "year"))
+	} else if user.PlanPeriod == "monthly" {
+		upgrades = append(upgrades, instruction("annual", "Developer · Annual (2 months free)", 120, "year"))
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"plan_tier":                user.PlanTier,
+		"plan_period":              user.PlanPeriod,
+		"plan_paid_at":             user.PlanPaidAt,
+		"subscription_status":      user.SubscriptionStatus,
+		"current_period_end":       user.CurrentPeriodEnd,
+		"razorpay_subscription_id": user.RazorpaySubscriptionID,
+		"human_label":              humanLabel,
+		"available_upgrades":       upgrades,
+	})
+}
+
 // ── GET /api/me/token ───────────────────────────────────────────────────────
 //
 // Returns a freshly-signed JWT the user can paste into `Authorization: Bearer …`
