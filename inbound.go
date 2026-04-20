@@ -164,15 +164,41 @@ func isAdmin(user *User, adminEmail string) bool {
 
 // ── POST /webhooks/brevo-inbound ───────────────────────────────────────────
 
+// extractInboundToken pulls the webhook secret from (in order) the URL path
+// value, the `?token=` query parameter, or the `X-Brevo-Token` header. Brevo
+// has been observed to drop query strings silently on some paid plans; the
+// path-based route is what we register in prod, but the other two live here
+// as fallbacks so a Brevo UI change doesn't silently break ingest again.
+func extractInboundToken(r *http.Request) string {
+	if v := r.PathValue("token"); v != "" {
+		return v
+	}
+	if v := r.URL.Query().Get("token"); v != "" {
+		return v
+	}
+	return r.Header.Get("X-Brevo-Token")
+}
+
 func (s *server) handleBrevoInbound(w http.ResponseWriter, r *http.Request) {
-	// Secret gate. Brevo doesn't sign the body, so we put the secret in the
-	// query string and compare in constant time.
+	// Log every hit BEFORE the token check so a webhookFailed event can be
+	// traced back to an actual request. User-Agent, source IP (via forwarded
+	// header), and body-size are enough to distinguish Brevo, a rogue scan,
+	// or a misconfigured client.
+	ua := r.Header.Get("User-Agent")
+	srcIP := r.Header.Get("Cf-Connecting-Ip")
+	if srcIP == "" {
+		srcIP = r.Header.Get("X-Forwarded-For")
+	}
+	tokenProvided := extractInboundToken(r)
+	slog.InfoContext(r.Context(), "inbound: request received",
+		"method", r.Method, "path", r.URL.Path, "has_query_token", r.URL.Query().Get("token") != "",
+		"has_header_token", r.Header.Get("X-Brevo-Token") != "", "has_path_token", r.PathValue("token") != "",
+		"user_agent", ua, "src_ip", srcIP, "content_length", r.ContentLength)
+
 	expected := s.cfg.Email.BrevoInboundSecret
-	provided := r.URL.Query().Get("token")
-	if expected == "" || subtle.ConstantTimeCompare([]byte(expected), []byte(provided)) != 1 {
-		// Do the compare even when `expected` is empty so a missing-secret
-		// config fails closed without a perceptible timing difference.
-		_ = subtle.ConstantTimeCompare([]byte("placeholder"), []byte(provided))
+	if expected == "" || subtle.ConstantTimeCompare([]byte(expected), []byte(tokenProvided)) != 1 {
+		_ = subtle.ConstantTimeCompare([]byte("placeholder"), []byte(tokenProvided))
+		slog.WarnContext(r.Context(), "inbound: token mismatch", "provided_len", len(tokenProvided), "expected_empty", expected == "")
 		writeError(w, http.StatusUnauthorized, "unauthorized", "Invalid inbound webhook token.")
 		return
 	}

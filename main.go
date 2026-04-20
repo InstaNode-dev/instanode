@@ -129,6 +129,10 @@ func main() {
 	mux.HandleFunc("POST /billing/migrate", s.handleMigrateResource)
 
 	// Inbound email (Brevo Inbound Parsing) + admin inbox view.
+	// Token lives in the URL path so Brevo can't silently drop it the way a
+	// ?token= query param can be stripped. The query-param and X-Brevo-Token
+	// header versions stay registered for back-compat + explicit test calls.
+	mux.HandleFunc("POST /webhooks/brevo-inbound/{token}", s.handleBrevoInbound)
 	mux.HandleFunc("POST /webhooks/brevo-inbound", s.handleBrevoInbound)
 	mux.HandleFunc("GET /admin/inbox", s.handleAdminInboxList)
 	mux.HandleFunc("POST /admin/inbox/{id}/mark-read", s.handleAdminInboxMarkRead)
