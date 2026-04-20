@@ -105,38 +105,98 @@ func reconcileInboundOnce(ctx context.Context, db *sql.DB, cfg *Config) (int, er
 		return 0, nil
 	}
 
-	// Pull the set of provider_ids already in our DB for these MessageIds so
-	// we only insert what's actually missing.
-	ids := make([]string, 0, len(events))
+	// The LIST endpoint only returns uuid/sender/recipient/date/logs — NOT
+	// messageId or subject. Fetch per-event detail for anything that's
+	// terminal AND whose uuid isn't already in our dedup cache.
+	//
+	// We dedup by provider_id (which the webhook path sets to MessageId). To
+	// avoid N API hits per tick when nothing's new, first pre-filter by
+	// storing the Brevo uuid as a secondary dedup key whenever the detail
+	// call succeeds — cheap enough and lets us skip re-fetching quickly.
+	uuids := make([]string, 0, len(events))
 	for _, e := range events {
-		if e.MessageID != "" {
-			ids = append(ids, e.MessageID)
+		if e.UUID != "" && eventIsTerminal(e) {
+			uuids = append(uuids, "brevo-uuid:"+e.UUID)
 		}
 	}
-	existing, err := existingProviderIDs(ctx, db, ids)
+	existingUUIDs, err := existingProviderIDs(ctx, db, uuids)
 	if err != nil {
-		return 0, fmt.Errorf("query existing provider_ids: %w", err)
+		return 0, fmt.Errorf("query existing uuids: %w", err)
 	}
 
 	inserted := 0
 	for _, e := range events {
-		if e.MessageID == "" {
+		if e.UUID == "" || !eventIsTerminal(e) {
 			continue
 		}
-		if _, ok := existing[e.MessageID]; ok {
+		uuidKey := "brevo-uuid:" + e.UUID
+		if _, ok := existingUUIDs[uuidKey]; ok {
 			continue
 		}
-		if !eventIsTerminal(e) {
-			// Still in-flight at Brevo; let the next pass pick it up.
+		// Fetch detail for messageId + subject.
+		detail, err := fetchBrevoInboundEventDetail(ctx, cfg.Email.BrevoAPIKey, e.UUID)
+		if err != nil {
+			slog.Warn("reconciler: detail fetch failed", "error", err, "uuid", e.UUID)
 			continue
 		}
-		if err := insertReconciledEvent(ctx, db, e); err != nil {
-			slog.Warn("reconciler: insert failed", "error", err, "message_id", e.MessageID)
+		// Second dedup: if the webhook DID land (concurrent with our tick),
+		// inbound_messages already has a row keyed on messageId. Don't
+		// double-insert with a uuid key.
+		if detail.MessageID != "" {
+			existingMID, err := existingProviderIDs(ctx, db, []string{detail.MessageID})
+			if err == nil {
+				if _, ok := existingMID[detail.MessageID]; ok {
+					// Webhook won the race; skip.
+					continue
+				}
+			}
+		}
+		// Provider id: prefer Brevo's MessageId (matches webhook path).
+		// Fall back to "brevo-uuid:<uuid>" so re-reconciles stay idempotent
+		// even when MessageId is missing.
+		providerID := detail.MessageID
+		if providerID == "" {
+			providerID = uuidKey
+		}
+		if err := insertReconciledDetail(ctx, db, providerID, e, detail); err != nil {
+			slog.Warn("reconciler: insert failed", "error", err, "provider_id", providerID)
 			continue
 		}
 		inserted++
 	}
 	return inserted, nil
+}
+
+// brevoInboundEventDetail is what /v3/inbound/events/{uuid} returns. The shape
+// is richer than the list: messageId, subject, and full log trail.
+type brevoInboundEventDetail struct {
+	MessageID string `json:"messageId"`
+	Sender    string `json:"sender"`
+	Recipient string `json:"recipient"`
+	Subject   string `json:"subject"`
+	Date      string `json:"receivedAt"`
+}
+
+func fetchBrevoInboundEventDetail(ctx context.Context, apiKey, uuid string) (*brevoInboundEventDetail, error) {
+	url := "https://api.brevo.com/v3/inbound/events/" + uuid
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	req.Header.Set("api-key", apiKey)
+	req.Header.Set("Accept", "application/json")
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 256))
+		return nil, fmt.Errorf("brevo detail http %d: %s", resp.StatusCode, string(body))
+	}
+	var out brevoInboundEventDetail
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, err
+	}
+	return &out, nil
 }
 
 // eventIsTerminal returns true when Brevo is done with this event — either
@@ -202,20 +262,32 @@ func existingProviderIDs(ctx context.Context, db *sql.DB, ids []string) (map[str
 	return out, rows.Err()
 }
 
-// insertReconciledEvent writes a metadata-only row. body_text / body_html /
-// raw_headers stay empty because Brevo's API doesn't expose them. We mark
-// spam_score NULL. Idempotent via ON CONFLICT (provider_id) DO NOTHING.
-func insertReconciledEvent(ctx context.Context, db *sql.DB, e brevoInboundEvent) error {
+// insertReconciledDetail writes a metadata-only row using detail-endpoint
+// fields. body_text / body_html / raw_headers stay empty because Brevo's
+// detail API doesn't expose them either. Idempotent via ON CONFLICT DO NOTHING.
+func insertReconciledDetail(ctx context.Context, db *sql.DB, providerID string, listEv brevoInboundEvent, detail *brevoInboundEventDetail) error {
+	// Prefer the detail timestamp (receivedAt), fall back to list date.
 	receivedAt := time.Now().UTC()
-	if t, err := time.Parse(time.RFC3339, e.Date); err == nil {
-		receivedAt = t.UTC()
+	for _, s := range []string{detail.Date, listEv.Date} {
+		if t, err := time.Parse(time.RFC3339, s); err == nil {
+			receivedAt = t.UTC()
+			break
+		}
+	}
+	sender := detail.Sender
+	if sender == "" {
+		sender = listEv.Sender
+	}
+	recipient := detail.Recipient
+	if recipient == "" {
+		recipient = listEv.Recipient
 	}
 	_, err := db.ExecContext(ctx, `
 		INSERT INTO inbound_messages
 		    (provider_id, from_email, from_name, to_email, subject, body_text, body_html, spam_score, raw_headers, received_at)
 		VALUES ($1, $2, '', $3, $4, '', '', NULL, NULL, $5)
 		ON CONFLICT (provider_id) DO NOTHING`,
-		e.MessageID, e.Sender, e.Recipient, e.Subject, receivedAt,
+		providerID, sender, recipient, detail.Subject, receivedAt,
 	)
 	return err
 }
