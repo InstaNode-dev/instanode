@@ -128,6 +128,11 @@ func main() {
 	mux.HandleFunc("POST /webhooks/razorpay", s.handleRazorpayWebhook)
 	mux.HandleFunc("POST /billing/migrate", s.handleMigrateResource)
 
+	// Inbound email (Brevo Inbound Parsing) + admin inbox view.
+	mux.HandleFunc("POST /webhooks/brevo-inbound", s.handleBrevoInbound)
+	mux.HandleFunc("GET /admin/inbox", s.handleAdminInboxList)
+	mux.HandleFunc("POST /admin/inbox/{id}/mark-read", s.handleAdminInboxMarkRead)
+
 	// Dashboard endpoints
 	mux.HandleFunc("GET /api/me/resources", s.handleGetResources)
 	mux.HandleFunc("POST /api/me/claim", s.handleClaimToken)
@@ -207,8 +212,13 @@ func main() {
 
 func withMiddleware(next http.Handler, cfg *Config) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Cap request body to prevent memory exhaustion.
-		r.Body = http.MaxBytesReader(w, r.Body, cfg.Limits.MaxRequestBodyBytes)
+		// Cap request body to prevent memory exhaustion. The Brevo inbound
+		// webhook needs a larger cap (email bodies + HTML can run to a few MB);
+		// that endpoint installs its own MaxBytesReader, so we skip the global
+		// cap for it here. Everything else gets the standard 1 MB lid.
+		if r.URL.Path != "/webhooks/brevo-inbound" {
+			r.Body = http.MaxBytesReader(w, r.Body, cfg.Limits.MaxRequestBodyBytes)
+		}
 
 		w.Header().Set("X-Request-ID", fmt.Sprintf("%d", time.Now().UnixNano()))
 		// Browsers reject Access-Control-Allow-Credentials: true together with

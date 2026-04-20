@@ -66,3 +66,22 @@ CREATE TABLE IF NOT EXISTS processed_webhooks (
     event_id        TEXT PRIMARY KEY,
     received_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- Inbound email (Brevo Inbound Parsing webhook). Every Brevo POST to
+-- /webhooks/brevo-inbound inserts one row per item. provider_id is Brevo's
+-- MessageId (or a fallback hash) and is UNIQUE so redeliveries are idempotent.
+CREATE TABLE IF NOT EXISTS inbound_messages (
+    id          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    provider_id TEXT UNIQUE,
+    from_email  TEXT NOT NULL,
+    from_name   TEXT,
+    to_email    TEXT NOT NULL,
+    subject     TEXT NOT NULL DEFAULT '',
+    body_text   TEXT NOT NULL DEFAULT '',
+    body_html   TEXT NOT NULL DEFAULT '',
+    spam_score  REAL,
+    raw_headers JSONB,
+    received_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    read_at     TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_inbound_messages_received_at ON inbound_messages (received_at DESC);

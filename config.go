@@ -25,7 +25,15 @@ type Config struct {
 	Reaper        ReaperConfig        `yaml:"reaper"`
 	Postgres      ProvisionConfig     `yaml:"postgres"`
 	Email         EmailConfig         `yaml:"email"`
+	Admin         AdminConfig         `yaml:"admin"`
 	Observability ObservabilityConfig `yaml:"observability"`
+}
+
+// AdminConfig gates admin-only endpoints (e.g. /admin/inbox) to a single
+// operator email. Only a signed-in user whose users.email matches
+// Admin.Email is allowed in; everyone else (including other paid users) sees 403.
+type AdminConfig struct {
+	Email string `yaml:"email"`
 }
 
 type EmailConfig struct {
@@ -38,6 +46,10 @@ type EmailConfig struct {
 	SMTPPass    string `yaml:"smtp_pass"`
 	FromAddress string `yaml:"from_address"`
 	FromName    string `yaml:"from_name"`
+	// BrevoInboundSecret gates POST /webhooks/brevo-inbound. Brevo appends it
+	// as `?token=<secret>` and we compare in constant time. Set via the
+	// BREVO_INBOUND_SECRET env var in prod; empty disables the endpoint (401s).
+	BrevoInboundSecret string `yaml:"brevo_inbound_secret"`
 }
 
 type ObservabilityConfig struct {
@@ -310,6 +322,12 @@ func (c *Config) overrideWithEnv() {
 	}
 	if v := os.Getenv("EMAIL_FROM_NAME"); v != "" {
 		c.Email.FromName = v
+	}
+	if v := os.Getenv("BREVO_INBOUND_SECRET"); v != "" {
+		c.Email.BrevoInboundSecret = v
+	}
+	if v := os.Getenv("ADMIN_EMAIL"); v != "" {
+		c.Admin.Email = v
 	}
 }
 
