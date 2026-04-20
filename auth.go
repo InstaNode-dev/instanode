@@ -264,7 +264,7 @@ func (s *server) handleGitHubCallback(w http.ResponseWriter, r *http.Request) {
 
 	// Welcome email on first signup only. Non-blocking — always returns before the send.
 	if isNewUser && githubUser.Email != "" {
-		subject, html := welcomeEmail(token)
+		subject, html := welcomeEmail()
 		s.email.SendAsync(githubUser.Email, subject, html)
 	}
 

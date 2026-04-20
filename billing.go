@@ -203,6 +203,7 @@ func (s *server) handleRazorpayWebhook(w http.ResponseWriter, r *http.Request) {
 			reason, _ = entity["error_reason"].(string)
 		}
 		slog.Warn("razorpay payment failed", "payment_id", paymentID, "order_id", orderID, "reason", reason)
+		s.notifyPaymentFailed(ctx, orderID, reason)
 	default:
 		slog.Info("razorpay webhook event ignored", "event", eventType, "payment_id", paymentID)
 	}
@@ -329,6 +330,36 @@ func (s *server) computeSignature(payload, secret string) string {
 	h := hmac.New(sha256.New, []byte(secret))
 	h.Write([]byte(payload))
 	return hex.EncodeToString(h.Sum(nil))
+}
+
+// notifyPaymentFailed looks up the paying user's email via the Razorpay order's
+// notes.user_id and fires off a "payment failed" email. Best-effort — any
+// lookup failure is logged and the function returns without raising.
+func (s *server) notifyPaymentFailed(ctx context.Context, orderID, reason string) {
+	if orderID == "" {
+		return
+	}
+	client := razorpay.NewClient(s.cfg.Razorpay.KeyID, s.cfg.Razorpay.KeySecret)
+	order, err := client.Order.Fetch(orderID, nil, nil)
+	if err != nil {
+		slog.Warn("payment_failed email: order fetch failed", "error", err, "order_id", orderID)
+		return
+	}
+	notes, _ := order["notes"].(map[string]interface{})
+	userIDStr, _ := notes["user_id"].(string)
+	if userIDStr == "" {
+		return
+	}
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		return
+	}
+	var email string
+	if err := s.db.QueryRowContext(ctx, "SELECT email FROM users WHERE id = $1", userID).Scan(&email); err != nil || email == "" {
+		return
+	}
+	subject, html := paymentFailedEmail(reason)
+	s.email.SendAsync(email, subject, html)
 }
 
 // Deprecated shim. Prefer POST /api/me/claim {token}. Kept so existing
