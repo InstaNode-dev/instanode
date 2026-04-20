@@ -33,6 +33,7 @@ type server struct {
 	cfg       *Config
 	baseURL   string
 	custDBURL string // customer Postgres (where we CREATE DATABASE)
+	email     *emailer
 }
 
 func main() {
@@ -100,6 +101,7 @@ func main() {
 		cfg:       cfg,
 		baseURL:   cfg.Server.BaseURL,
 		custDBURL: cfg.Database.CustomerURL,
+		email:     newEmailer(cfg.Email),
 	}
 
 	// Start the expired resource reaper.

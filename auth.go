@@ -240,13 +240,16 @@ func (s *server) handleGitHubCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Upsert user. Bound platform-PG INSERT to 5s.
+	// xmax=0 on the returned row signals a fresh INSERT (first-time signup)
+	// vs an update of the existing row — used to gate the welcome email.
 	upsertCtx, upsertCancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer upsertCancel()
 	var userID uuid.UUID
+	var isNewUser bool
 	err = s.db.QueryRowContext(upsertCtx, `
 		INSERT INTO users (github_id, email) VALUES ($1, $2)
 		ON CONFLICT (github_id) DO UPDATE SET email = EXCLUDED.email
-		RETURNING id`, githubUser.ID, githubUser.Email).Scan(&userID)
+		RETURNING id, (xmax = 0) AS inserted`, githubUser.ID, githubUser.Email).Scan(&userID, &isNewUser)
 	if err != nil {
 		s.oauthFail(w, r, "user_upsert_failed", err)
 		return
@@ -257,6 +260,12 @@ func (s *server) handleGitHubCallback(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.oauthFail(w, r, "jwt_generate_failed", err)
 		return
+	}
+
+	// Welcome email on first signup only. Non-blocking — always returns before the send.
+	if isNewUser && githubUser.Email != "" {
+		subject, html := welcomeEmail(token)
+		s.email.SendAsync(githubUser.Email, subject, html)
 	}
 
 	// Session cookie. Shared across api.instanode.dev and instanode.dev so

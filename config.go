@@ -24,7 +24,20 @@ type Config struct {
 	Limits        LimitsConfig        `yaml:"limits"`
 	Reaper        ReaperConfig        `yaml:"reaper"`
 	Postgres      ProvisionConfig     `yaml:"postgres"`
+	Email         EmailConfig         `yaml:"email"`
 	Observability ObservabilityConfig `yaml:"observability"`
+}
+
+type EmailConfig struct {
+	// SMTP transport (Brevo/SendGrid/any provider exposing SMTP on 587+STARTTLS).
+	// When SMTPHost is empty, email sending is disabled and Send() becomes a no-op
+	// (logs a debug line). Never blocks request paths; callers always use SendAsync.
+	SMTPHost    string `yaml:"smtp_host"`
+	SMTPPort    int    `yaml:"smtp_port"`
+	SMTPUser    string `yaml:"smtp_user"`
+	SMTPPass    string `yaml:"smtp_pass"`
+	FromAddress string `yaml:"from_address"`
+	FromName    string `yaml:"from_name"`
 }
 
 type ObservabilityConfig struct {
@@ -155,6 +168,11 @@ func DefaultConfig() *Config {
 			PublicPort:       5432,
 			RequireTLS:       boolPtr(true),
 		},
+		Email: EmailConfig{
+			SMTPPort:    587,
+			FromAddress: "no-reply@instanode.dev",
+			FromName:    "instanode",
+		},
 		Observability: ObservabilityConfig{
 			Enabled:      false,
 			ServiceName:  "instant-lite-api",
@@ -257,6 +275,26 @@ func (c *Config) overrideWithEnv() {
 	if v := os.Getenv("POSTGRES_REQUIRE_TLS"); v != "" {
 		b := strings.EqualFold(v, "true") || v == "1"
 		c.Postgres.RequireTLS = &b
+	}
+	if v := os.Getenv("BREVO_SMTP_HOST"); v != "" {
+		c.Email.SMTPHost = v
+	}
+	if v := os.Getenv("BREVO_SMTP_PORT"); v != "" {
+		if p, err := strconv.Atoi(v); err == nil {
+			c.Email.SMTPPort = p
+		}
+	}
+	if v := os.Getenv("BREVO_SMTP_USER"); v != "" {
+		c.Email.SMTPUser = v
+	}
+	if v := os.Getenv("BREVO_SMTP_PASS"); v != "" {
+		c.Email.SMTPPass = v
+	}
+	if v := os.Getenv("EMAIL_FROM_ADDRESS"); v != "" {
+		c.Email.FromAddress = v
+	}
+	if v := os.Getenv("EMAIL_FROM_NAME"); v != "" {
+		c.Email.FromName = v
 	}
 }
 

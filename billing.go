@@ -304,6 +304,25 @@ func (s *server) handlePaymentCaptured(ctx context.Context, entity map[string]in
 		"customer_id", customerID,
 		"resources_promoted", affected,
 	)
+
+	// Receipt email. Non-fatal — payment has already been committed to DB;
+	// a missing email is strictly a UX regression.
+	var userEmail string
+	if err := s.db.QueryRowContext(ctx, "SELECT email FROM users WHERE id = $1", userID).Scan(&userEmail); err == nil && userEmail != "" {
+		amountCents := 0
+		if v, ok := entity["amount"].(float64); ok {
+			amountCents = int(v)
+		}
+		currency, _ := entity["currency"].(string)
+		planLabel := "Developer · Monthly"
+		nextRenewal := time.Now().AddDate(0, 1, 0)
+		if period == "annual" {
+			planLabel = "Developer · Annual"
+			nextRenewal = time.Now().AddDate(1, 0, 0)
+		}
+		subject, html := receiptEmail(planLabel, amountCents, currency, nextRenewal)
+		s.email.SendAsync(userEmail, subject, html)
+	}
 }
 
 func (s *server) computeSignature(payload, secret string) string {
