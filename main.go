@@ -122,7 +122,9 @@ func main() {
 	mux.HandleFunc("GET /auth/me", s.handleMe)
 
 	// Billing endpoints
-	mux.HandleFunc("POST /billing/create-order", s.handleCreateOrder)
+	mux.HandleFunc("POST /billing/create-order", s.handleCreateOrder)               // legacy one-time charge — kept for backward compat
+	mux.HandleFunc("POST /billing/create-subscription", s.handleCreateSubscription) // recurring (preferred)
+	mux.HandleFunc("POST /billing/cancel-subscription", s.handleCancelSubscription)
 	mux.HandleFunc("POST /webhooks/razorpay", s.handleRazorpayWebhook)
 	mux.HandleFunc("POST /billing/migrate", s.handleMigrateResource)
 

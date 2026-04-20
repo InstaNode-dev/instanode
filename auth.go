@@ -29,14 +29,17 @@ func (s *server) oauthFail(w http.ResponseWriter, r *http.Request, code string, 
 }
 
 type User struct {
-	ID                  uuid.UUID  `json:"id"`
-	GitHubID            int64      `json:"github_id"`
-	Email               string     `json:"email"`
-	RazorpayCustomerID  *string    `json:"razorpay_customer_id"`
-	PlanTier            string     `json:"plan_tier"`
-	PlanPeriod          string     `json:"plan_period"`
-	PlanPaidAt          *time.Time `json:"plan_paid_at"`
-	CreatedAt           time.Time  `json:"created_at"`
+	ID                     uuid.UUID  `json:"id"`
+	GitHubID               int64      `json:"github_id"`
+	Email                  string     `json:"email"`
+	RazorpayCustomerID     *string    `json:"razorpay_customer_id"`
+	PlanTier               string     `json:"plan_tier"`
+	PlanPeriod             string     `json:"plan_period"`
+	PlanPaidAt             *time.Time `json:"plan_paid_at"`
+	RazorpaySubscriptionID *string    `json:"razorpay_subscription_id,omitempty"`
+	SubscriptionStatus     *string    `json:"subscription_status,omitempty"`
+	CurrentPeriodEnd       *time.Time `json:"current_period_end,omitempty"`
+	CreatedAt              time.Time  `json:"created_at"`
 }
 
 type Claims struct {
@@ -97,10 +100,12 @@ func (s *server) authUser(r *http.Request) *User {
 	defer cancel()
 	var user User
 	qerr := s.db.QueryRowContext(ctx,
-		`SELECT id, github_id, email, razorpay_customer_id, plan_tier, plan_period, plan_paid_at, created_at
+		`SELECT id, github_id, email, razorpay_customer_id, plan_tier, plan_period, plan_paid_at,
+		        razorpay_subscription_id, subscription_status, current_period_end, created_at
 		 FROM users WHERE id = $1`, claims.UserID,
 	).Scan(&user.ID, &user.GitHubID, &user.Email, &user.RazorpayCustomerID,
-		&user.PlanTier, &user.PlanPeriod, &user.PlanPaidAt, &user.CreatedAt)
+		&user.PlanTier, &user.PlanPeriod, &user.PlanPaidAt,
+		&user.RazorpaySubscriptionID, &user.SubscriptionStatus, &user.CurrentPeriodEnd, &user.CreatedAt)
 	if qerr != nil {
 		return nil
 	}
@@ -121,10 +126,12 @@ func (s *server) getUserFromRequest(r *http.Request) (*User, error) {
 	defer cancel()
 	var user User
 	err = s.db.QueryRowContext(ctx,
-		`SELECT id, github_id, email, razorpay_customer_id, plan_tier, plan_period, plan_paid_at, created_at
+		`SELECT id, github_id, email, razorpay_customer_id, plan_tier, plan_period, plan_paid_at,
+		        razorpay_subscription_id, subscription_status, current_period_end, created_at
 		 FROM users WHERE id = $1`, claims.UserID,
 	).Scan(&user.ID, &user.GitHubID, &user.Email, &user.RazorpayCustomerID,
-		&user.PlanTier, &user.PlanPeriod, &user.PlanPaidAt, &user.CreatedAt)
+		&user.PlanTier, &user.PlanPeriod, &user.PlanPaidAt,
+		&user.RazorpaySubscriptionID, &user.SubscriptionStatus, &user.CurrentPeriodEnd, &user.CreatedAt)
 	if err != nil {
 		return nil, err
 	}

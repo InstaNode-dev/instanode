@@ -19,6 +19,13 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS plan_tier   TEXT NOT NULL DEFAULT 'fr
 ALTER TABLE users ADD COLUMN IF NOT EXISTS plan_period TEXT NOT NULL DEFAULT 'monthly';
 ALTER TABLE users ADD COLUMN IF NOT EXISTS plan_paid_at TIMESTAMPTZ;
 
+-- Razorpay Subscriptions (recurring billing).
+-- subscription_status mirrors Razorpay's lifecycle: created → authenticated →
+-- active → (charged repeatedly) → cancelled | halted | completed.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS razorpay_subscription_id TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS subscription_status TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS current_period_end TIMESTAMPTZ;
+
 CREATE TABLE IF NOT EXISTS resources (
     id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     token           UUID NOT NULL UNIQUE DEFAULT uuid_generate_v4(),

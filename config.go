@@ -82,6 +82,11 @@ type RazorpayConfig struct {
 	KeyID         string `yaml:"key_id"`
 	KeySecret     string `yaml:"key_secret"`
 	WebhookSecret string `yaml:"webhook_secret"`
+	// Plan IDs for recurring subscriptions. Created once in the Razorpay
+	// dashboard (or via POST /v1/plans) — amount/interval is fixed there.
+	// When empty, the subscription endpoints return 503.
+	PlanIDMonthly string `yaml:"plan_id_monthly"`
+	PlanIDAnnual  string `yaml:"plan_id_annual"`
 }
 
 type JWTConfig struct {
@@ -242,6 +247,16 @@ func (c *Config) overrideWithEnv() {
 	if c.Razorpay.WebhookSecret == "" {
 		if v := os.Getenv("RAZORPAY_WEBHOOK_SECRET"); v != "" {
 			c.Razorpay.WebhookSecret = v
+		}
+	}
+	if c.Razorpay.PlanIDMonthly == "" {
+		if v := os.Getenv("RAZORPAY_PLAN_ID_MONTHLY"); v != "" {
+			c.Razorpay.PlanIDMonthly = v
+		}
+	}
+	if c.Razorpay.PlanIDAnnual == "" {
+		if v := os.Getenv("RAZORPAY_PLAN_ID_ANNUAL"); v != "" {
+			c.Razorpay.PlanIDAnnual = v
 		}
 	}
 	if c.JWT.Secret == "" {

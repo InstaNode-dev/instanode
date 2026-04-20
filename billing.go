@@ -163,49 +163,68 @@ func (s *server) handleRazorpayWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Extract payment entity (present on both payment.captured and payment.failed).
+	// Idempotency key: prefer Razorpay's event-level id when present (every
+	// webhook carries one); fall back to payment/subscription entity ids.
 	payload, _ := event["payload"].(map[string]interface{})
 	paymentMap, _ := payload["payment"].(map[string]interface{})
-	entity, _ := paymentMap["entity"].(map[string]interface{})
+	paymentEntity, _ := paymentMap["entity"].(map[string]interface{})
+	subMap, _ := payload["subscription"].(map[string]interface{})
+	subEntity, _ := subMap["entity"].(map[string]interface{})
 
-	paymentID, _ := entity["id"].(string)
-	if paymentID == "" {
-		// Nothing to dedupe on — accept and return 200 so Razorpay doesn't retry.
-		slog.Warn("razorpay webhook missing payment id", "event", eventType)
+	dedupID, _ := event["id"].(string)
+	if dedupID == "" {
+		if p, ok := paymentEntity["id"].(string); ok {
+			dedupID = p
+		} else if s, ok := subEntity["id"].(string); ok {
+			dedupID = s + ":" + eventType
+		}
+	}
+	if dedupID == "" {
+		slog.Warn("razorpay webhook: no dedup id", "event", eventType)
 		w.WriteHeader(http.StatusOK)
 		return
 	}
 
-	// Idempotency: record the payment id; if it was already seen, no-op.
+	// Idempotency: record the dedup id; if it was already seen, no-op.
 	res, err := s.db.ExecContext(ctx,
 		"INSERT INTO processed_webhooks (event_id) VALUES ($1) ON CONFLICT (event_id) DO NOTHING",
-		paymentID,
+		dedupID,
 	)
 	if err != nil {
-		slog.ErrorContext(r.Context(), "webhook dedup insert failed", "error", err, "payment_id", paymentID)
+		slog.ErrorContext(r.Context(), "webhook dedup insert failed", "error", err, "dedup_id", dedupID)
 		writeError(w, http.StatusInternalServerError, "internal_error", "Could not process webhook — please retry.")
 		return
 	}
 	rows, _ := res.RowsAffected()
 	if rows == 0 {
-		slog.Info("razorpay webhook already processed; skipping", "payment_id", paymentID, "event", eventType)
+		slog.Info("razorpay webhook already processed; skipping", "dedup_id", dedupID, "event", eventType)
 		w.WriteHeader(http.StatusOK)
 		return
 	}
 
 	switch eventType {
 	case "payment.captured":
-		s.handlePaymentCaptured(ctx, entity, paymentID)
+		s.handlePaymentCaptured(ctx, paymentEntity, dedupID)
 	case "payment.failed":
-		orderID, _ := entity["order_id"].(string)
-		reason, _ := entity["error_description"].(string)
+		orderID, _ := paymentEntity["order_id"].(string)
+		reason, _ := paymentEntity["error_description"].(string)
 		if reason == "" {
-			reason, _ = entity["error_reason"].(string)
+			reason, _ = paymentEntity["error_reason"].(string)
 		}
-		slog.Warn("razorpay payment failed", "payment_id", paymentID, "order_id", orderID, "reason", reason)
+		slog.Warn("razorpay payment failed", "dedup_id", dedupID, "order_id", orderID, "reason", reason)
 		s.notifyPaymentFailed(ctx, orderID, reason)
+	case "subscription.activated", "subscription.charged":
+		s.handleSubscriptionCharged(ctx, subEntity, paymentEntity)
+	case "subscription.halted":
+		s.handleSubscriptionHalted(ctx, subEntity)
+	case "subscription.cancelled":
+		s.handleSubscriptionCancelled(ctx, subEntity)
+	case "subscription.completed":
+		s.handleSubscriptionCompleted(ctx, subEntity)
+	case "subscription.authenticated", "subscription.pending", "subscription.paused", "subscription.resumed":
+		slog.Info("razorpay subscription lifecycle event", "event", eventType, "sub_id", subEntity["id"])
 	default:
-		slog.Info("razorpay webhook event ignored", "event", eventType, "payment_id", paymentID)
+		slog.Info("razorpay webhook event ignored", "event", eventType, "dedup_id", dedupID)
 	}
 
 	w.WriteHeader(http.StatusOK)
@@ -360,6 +379,282 @@ func (s *server) notifyPaymentFailed(ctx context.Context, orderID, reason string
 	}
 	subject, html := paymentFailedEmail(reason)
 	s.email.SendAsync(email, subject, html)
+}
+
+// ── Subscriptions (recurring billing) ───────────────────────────────────────
+
+type CreateSubscriptionRequest struct {
+	Plan  string `json:"plan"`            // "monthly" | "annual"
+	Token string `json:"token,omitempty"` // optional anon resource token to claim on first charge
+}
+
+type CreateSubscriptionResponse struct {
+	SubscriptionID string `json:"subscription_id"`
+	ShortURL       string `json:"short_url"`
+	KeyID          string `json:"key_id"`
+	PlanLabel      string `json:"plan_label"`
+}
+
+// handleCreateSubscription creates a Razorpay Subscription for the logged-in
+// user and persists subscription_id + status='created' on the user row. The
+// returned short_url can be used directly (hosted Razorpay page) or fed into
+// Razorpay Checkout.js as options.subscription_id.
+func (s *server) handleCreateSubscription(w http.ResponseWriter, r *http.Request) {
+	user := s.authUser(r)
+	if user == nil {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "Sign in required.")
+		return
+	}
+
+	var req CreateSubscriptionRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_body", "Request body must be JSON.")
+		return
+	}
+
+	var planID, planLabel string
+	var totalCount int
+	switch req.Plan {
+	case "monthly":
+		planID, planLabel, totalCount = s.cfg.Razorpay.PlanIDMonthly, "Developer · Monthly", 120 // 10 years
+	case "annual":
+		planID, planLabel, totalCount = s.cfg.Razorpay.PlanIDAnnual, "Developer · Annual", 10 // 10 years
+	default:
+		writeError(w, http.StatusBadRequest, "invalid_plan", "plan must be 'monthly' or 'annual'.")
+		return
+	}
+	if planID == "" {
+		writeError(w, http.StatusServiceUnavailable, "plan_not_configured", "Billing is not fully configured — contact support.")
+		return
+	}
+
+	notes := map[string]interface{}{"user_id": user.ID.String(), "plan": req.Plan}
+	if req.Token != "" {
+		if _, err := uuid.Parse(req.Token); err == nil {
+			notes["token"] = req.Token
+		}
+	}
+
+	client := razorpay.NewClient(s.cfg.Razorpay.KeyID, s.cfg.Razorpay.KeySecret)
+	sub, err := client.Subscription.Create(map[string]interface{}{
+		"plan_id":         planID,
+		"total_count":     totalCount,
+		"customer_notify": 1,
+		"notes":           notes,
+	}, nil)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "razorpay subscription create failed", "error", err, "user_id", user.ID, "plan", req.Plan)
+		writeError(w, http.StatusBadGateway, "payment_gateway_error", "Payment provider is unavailable — please try again in a moment.")
+		return
+	}
+
+	subID, _ := sub["id"].(string)
+	shortURL, _ := sub["short_url"].(string)
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	if _, err := s.db.ExecContext(ctx,
+		"UPDATE users SET razorpay_subscription_id = $1, subscription_status = 'created', plan_period = $2 WHERE id = $3",
+		subID, req.Plan, user.ID,
+	); err != nil {
+		slog.ErrorContext(r.Context(), "persist subscription_id failed", "error", err, "user_id", user.ID, "sub_id", subID)
+	}
+
+	writeJSON(w, http.StatusOK, CreateSubscriptionResponse{
+		SubscriptionID: subID,
+		ShortURL:       shortURL,
+		KeyID:          s.cfg.Razorpay.KeyID,
+		PlanLabel:      planLabel,
+	})
+}
+
+// handleCancelSubscription cancels at cycle end — user keeps paid access until
+// current_period_end, then downgrades naturally.
+func (s *server) handleCancelSubscription(w http.ResponseWriter, r *http.Request) {
+	user := s.authUser(r)
+	if user == nil {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "Sign in required.")
+		return
+	}
+
+	var subID string
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	if err := s.db.QueryRowContext(ctx, "SELECT razorpay_subscription_id FROM users WHERE id = $1", user.ID).Scan(&subID); err != nil || subID == "" {
+		writeError(w, http.StatusNotFound, "no_subscription", "No active subscription on this account.")
+		return
+	}
+
+	client := razorpay.NewClient(s.cfg.Razorpay.KeyID, s.cfg.Razorpay.KeySecret)
+	if _, err := client.Subscription.Cancel(subID, map[string]interface{}{"cancel_at_cycle_end": 1}, nil); err != nil {
+		slog.ErrorContext(r.Context(), "razorpay subscription cancel failed", "error", err, "sub_id", subID)
+		writeError(w, http.StatusBadGateway, "payment_gateway_error", "Could not cancel subscription right now — please retry.")
+		return
+	}
+
+	if _, err := s.db.ExecContext(ctx,
+		"UPDATE users SET subscription_status = 'cancelled' WHERE id = $1",
+		user.ID,
+	); err != nil {
+		slog.ErrorContext(r.Context(), "persist cancellation failed", "error", err, "user_id", user.ID)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "message": "Subscription will end at the close of the current period."})
+}
+
+// handleSubscriptionCharged runs on both subscription.activated (first charge)
+// and subscription.charged (recurring). Promotes the user to paid, rolls forward
+// current_period_end, sends a receipt.
+func (s *server) handleSubscriptionCharged(ctx context.Context, subEntity, paymentEntity map[string]interface{}) {
+	subID, _ := subEntity["id"].(string)
+	if subID == "" {
+		return
+	}
+	notes, _ := subEntity["notes"].(map[string]interface{})
+	userID, ok := userIDFromNotes(notes)
+	if !ok {
+		slog.Warn("subscription webhook: no user_id in notes", "sub_id", subID)
+		return
+	}
+
+	periodEnd := unixToTime(subEntity["current_end"])
+	period := periodFromSubscription(subEntity)
+
+	if _, err := s.db.ExecContext(ctx,
+		`UPDATE users
+		   SET plan_tier = 'paid', plan_period = $1, plan_paid_at = NOW(),
+		       razorpay_subscription_id = $2, subscription_status = 'active',
+		       current_period_end = $3
+		 WHERE id = $4`,
+		period, subID, periodEnd, userID,
+	); err != nil {
+		slog.Error("subscription.charged: user update failed", "error", err, "user_id", userID, "sub_id", subID)
+		return
+	}
+
+	// Claim any pre-payment anon token captured in notes.token — same semantics
+	// as the old payment.captured path.
+	if tokenStr, _ := notes["token"].(string); tokenStr != "" {
+		if tokenUUID, err := uuid.Parse(tokenStr); err == nil {
+			s.db.ExecContext(ctx,
+				`UPDATE resources SET migrated_to_user_id = $1, tier = 'paid', expires_at = NULL
+				 WHERE token = $2 AND status = 'active'`,
+				userID, tokenUUID,
+			)
+		}
+	}
+	// Promote every active resource belonging to the user.
+	s.db.ExecContext(ctx,
+		"UPDATE resources SET tier = 'paid', expires_at = NULL WHERE migrated_to_user_id = $1 AND status = 'active'",
+		userID,
+	)
+
+	// Receipt email.
+	var email string
+	if err := s.db.QueryRowContext(ctx, "SELECT email FROM users WHERE id = $1", userID).Scan(&email); err == nil && email != "" {
+		amountCents := 0
+		if v, ok := paymentEntity["amount"].(float64); ok {
+			amountCents = int(v)
+		}
+		currency, _ := paymentEntity["currency"].(string)
+		planLabel := "Developer · Monthly"
+		if period == "annual" {
+			planLabel = "Developer · Annual"
+		}
+		subject, html := receiptEmail(planLabel, amountCents, currency, periodEnd)
+		s.email.SendAsync(email, subject, html)
+	}
+
+	slog.Info("subscription charged", "user_id", userID, "sub_id", subID, "period_end", periodEnd.Format(time.RFC3339))
+}
+
+// handleSubscriptionHalted — Razorpay gave up after retry policy exhausted.
+// Downgrade the user to free tier; existing anon-claimed resources keep working
+// until their TTL (resources stay tier='paid' on the row — no scary data loss
+// on billing failure; operator can reach out before yanking access).
+func (s *server) handleSubscriptionHalted(ctx context.Context, subEntity map[string]interface{}) {
+	subID, _ := subEntity["id"].(string)
+	notes, _ := subEntity["notes"].(map[string]interface{})
+	userID, ok := userIDFromNotes(notes)
+	if !ok {
+		return
+	}
+	s.db.ExecContext(ctx,
+		"UPDATE users SET subscription_status = 'halted', plan_tier = 'free' WHERE id = $1",
+		userID,
+	)
+	var email string
+	if err := s.db.QueryRowContext(ctx, "SELECT email FROM users WHERE id = $1", userID).Scan(&email); err == nil && email != "" {
+		subject, html := paymentFailedEmail("Your subscription has been halted after multiple failed charge attempts.")
+		s.email.SendAsync(email, subject, html)
+	}
+	slog.Warn("subscription halted", "user_id", userID, "sub_id", subID)
+}
+
+func (s *server) handleSubscriptionCancelled(ctx context.Context, subEntity map[string]interface{}) {
+	subID, _ := subEntity["id"].(string)
+	notes, _ := subEntity["notes"].(map[string]interface{})
+	userID, ok := userIDFromNotes(notes)
+	if !ok {
+		return
+	}
+	// User keeps paid tier until current_period_end; status becomes 'cancelled'.
+	s.db.ExecContext(ctx,
+		"UPDATE users SET subscription_status = 'cancelled' WHERE id = $1",
+		userID,
+	)
+	slog.Info("subscription cancelled", "user_id", userID, "sub_id", subID)
+}
+
+func (s *server) handleSubscriptionCompleted(ctx context.Context, subEntity map[string]interface{}) {
+	subID, _ := subEntity["id"].(string)
+	notes, _ := subEntity["notes"].(map[string]interface{})
+	userID, ok := userIDFromNotes(notes)
+	if !ok {
+		return
+	}
+	s.db.ExecContext(ctx,
+		"UPDATE users SET subscription_status = 'completed' WHERE id = $1",
+		userID,
+	)
+	slog.Info("subscription completed", "user_id", userID, "sub_id", subID)
+}
+
+// ── Small helpers ───────────────────────────────────────────────────────────
+
+func userIDFromNotes(notes map[string]interface{}) (uuid.UUID, bool) {
+	v, _ := notes["user_id"].(string)
+	if v == "" {
+		return uuid.Nil, false
+	}
+	id, err := uuid.Parse(v)
+	if err != nil {
+		return uuid.Nil, false
+	}
+	return id, true
+}
+
+// unixToTime converts the Razorpay numeric field (JSON number → float64) into
+// a time.Time. Returns zero time on missing/invalid input so callers can decide
+// whether to persist NULL.
+func unixToTime(v interface{}) time.Time {
+	switch n := v.(type) {
+	case float64:
+		return time.Unix(int64(n), 0).UTC()
+	case int64:
+		return time.Unix(n, 0).UTC()
+	}
+	return time.Time{}
+}
+
+// periodFromSubscription reads notes.plan (we set it at creation) so we know
+// "monthly" vs "annual" without another Razorpay API call.
+func periodFromSubscription(subEntity map[string]interface{}) string {
+	notes, _ := subEntity["notes"].(map[string]interface{})
+	if v, _ := notes["plan"].(string); v == "annual" {
+		return "annual"
+	}
+	return "monthly"
 }
 
 // Deprecated shim. Prefer POST /api/me/claim {token}. Kept so existing
