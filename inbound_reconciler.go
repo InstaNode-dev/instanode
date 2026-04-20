@@ -105,17 +105,16 @@ func reconcileInboundOnce(ctx context.Context, db *sql.DB, cfg *Config) (int, er
 		return 0, nil
 	}
 
-	// The LIST endpoint only returns uuid/sender/recipient/date/logs — NOT
-	// messageId or subject. Fetch per-event detail for anything that's
-	// terminal AND whose uuid isn't already in our dedup cache.
+	// The LIST endpoint only returns uuid/sender/recipient/date — NO logs,
+	// messageId, or subject. We can't filter for terminal-state here. Instead
+	// we reconcile EVERY event; the messageId-based second dedup below keeps
+	// us from double-inserting rows the webhook already delivered.
 	//
-	// We dedup by provider_id (which the webhook path sets to MessageId). To
-	// avoid N API hits per tick when nothing's new, first pre-filter by
-	// storing the Brevo uuid as a secondary dedup key whenever the detail
-	// call succeeds — cheap enough and lets us skip re-fetching quickly.
+	// Pre-dedup by uuid (dedupkey = 'brevo-uuid:' + uuid) so a stable re-run
+	// doesn't hit the detail endpoint N times per tick.
 	uuids := make([]string, 0, len(events))
 	for _, e := range events {
-		if e.UUID != "" && eventIsTerminal(e) {
+		if e.UUID != "" {
 			uuids = append(uuids, "brevo-uuid:"+e.UUID)
 		}
 	}
@@ -126,7 +125,7 @@ func reconcileInboundOnce(ctx context.Context, db *sql.DB, cfg *Config) (int, er
 
 	inserted := 0
 	for _, e := range events {
-		if e.UUID == "" || !eventIsTerminal(e) {
+		if e.UUID == "" {
 			continue
 		}
 		uuidKey := "brevo-uuid:" + e.UUID

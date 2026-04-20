@@ -79,33 +79,29 @@ func TestBrevoInboundListResponse_UnmarshalsRealPayload(t *testing.T) {
 	}
 }
 
-func TestReconcileDiffLogic_SkipsExisting(t *testing.T) {
-	// This test doesn't need a DB — it exercises the event filtering that
-	// determines which events become inserts. Given an "existing" set and a
-	// list of events, verify we only act on (terminal ∩ not-existing).
+func TestReconcileDiffLogic_SkipsExistingByUUID(t *testing.T) {
+	// Brevo's list response has no logs/messageId — we dedupe by UUID
+	// (stored as provider_id='brevo-uuid:<uuid>') and reconcile everything
+	// else. This test mirrors the filter used in reconcileInboundOnce.
 	events := []brevoInboundEvent{
-		{MessageID: "new-failed", Logs: []brevoEventLog{{Type: "webhookFailed"}}},
-		{MessageID: "existing", Logs: []brevoEventLog{{Type: "webhookFailed"}}},
-		{MessageID: "in-flight", Logs: []brevoEventLog{{Type: "processed"}}},
-		{MessageID: "", Logs: []brevoEventLog{{Type: "webhookFailed"}}}, // empty id, must skip
+		{UUID: "new-one"},
+		{UUID: "already-reconciled"},
+		{UUID: ""}, // must skip
 	}
-	existing := map[string]struct{}{"existing": {}}
+	existing := map[string]struct{}{"brevo-uuid:already-reconciled": {}}
 
-	var wouldInsert []string
+	var wouldFetchDetail []string
 	for _, e := range events {
-		if e.MessageID == "" {
+		if e.UUID == "" {
 			continue
 		}
-		if _, ok := existing[e.MessageID]; ok {
+		if _, ok := existing["brevo-uuid:"+e.UUID]; ok {
 			continue
 		}
-		if !eventIsTerminal(e) {
-			continue
-		}
-		wouldInsert = append(wouldInsert, e.MessageID)
+		wouldFetchDetail = append(wouldFetchDetail, e.UUID)
 	}
 
-	if len(wouldInsert) != 1 || wouldInsert[0] != "new-failed" {
-		t.Errorf("expected [new-failed], got %v", wouldInsert)
+	if len(wouldFetchDetail) != 1 || wouldFetchDetail[0] != "new-one" {
+		t.Errorf("expected [new-one], got %v", wouldFetchDetail)
 	}
 }
