@@ -50,6 +50,14 @@ type EmailConfig struct {
 	// as `?token=<secret>` and we compare in constant time. Set via the
 	// BREVO_INBOUND_SECRET env var in prod; empty disables the endpoint (401s).
 	BrevoInboundSecret string `yaml:"brevo_inbound_secret"`
+	// BrevoAPIKey (xkeysib-…) authenticates our reconciler calls against
+	// https://api.brevo.com/v3/inbound/events so we can backfill metadata
+	// for any email Brevo received but whose webhook delivery failed.
+	// Empty disables the reconciler goroutine.
+	BrevoAPIKey string `yaml:"brevo_api_key"`
+	// ReconcileInterval is how often the reconciler polls Brevo. Default 10m
+	// so a lost webhook shows up within 10 minutes. Parsed with time.ParseDuration.
+	ReconcileInterval string `yaml:"reconcile_interval"`
 }
 
 type ObservabilityConfig struct {
@@ -325,6 +333,12 @@ func (c *Config) overrideWithEnv() {
 	}
 	if v := os.Getenv("BREVO_INBOUND_SECRET"); v != "" {
 		c.Email.BrevoInboundSecret = v
+	}
+	if v := os.Getenv("BREVO_API_KEY"); v != "" {
+		c.Email.BrevoAPIKey = v
+	}
+	if v := os.Getenv("BREVO_RECONCILE_INTERVAL"); v != "" {
+		c.Email.ReconcileInterval = v
 	}
 	if v := os.Getenv("ADMIN_EMAIL"); v != "" {
 		c.Admin.Email = v

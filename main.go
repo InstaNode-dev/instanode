@@ -107,6 +107,12 @@ func main() {
 	// Start the expired resource reaper.
 	startReaper(db, rdb, cfg, cfg.Database.CustomerURL)
 
+	// Start the inbound-email reconciler. Polls Brevo's /v3/inbound/events API
+	// on an interval and backfills metadata for any message whose webhook
+	// delivery failed (Brevo has no retry-delivery API, so this is the only
+	// way we learn about those).
+	startInboundReconciler(db, cfg)
+
 	mux := http.NewServeMux()
 
 	// Provisioning endpoints
