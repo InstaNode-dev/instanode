@@ -449,10 +449,13 @@ func (s *server) handleCreateSubscription(w http.ResponseWriter, r *http.Request
 		}
 	}
 
-	// Razorpay's Go SDK doesn't accept a context. Wrap the call in a timeout
-	// so a slow Razorpay API doesn't pin the handler open until DO's
-	// upstream 60s timeout turns into a 502. 15s is well above Razorpay's
-	// normal <1s p95 and still under any sane gateway deadline.
+	// Razorpay SDK call with timing checkpoints so we can distinguish
+	// "SDK never returned" vs "Razorpay responded slowly" vs "outbound
+	// blocked at the container level" in production logs.
+	callStart := time.Now()
+	slog.InfoContext(r.Context(), "razorpay subscription create: starting",
+		"user_id", user.ID, "plan", req.Plan, "plan_id", planID)
+
 	type subResult struct {
 		data map[string]interface{}
 		err  error
@@ -472,15 +475,20 @@ func (s *server) handleCreateSubscription(w http.ResponseWriter, r *http.Request
 	var sub map[string]interface{}
 	select {
 	case res := <-resCh:
+		elapsed := time.Since(callStart)
 		if res.err != nil {
-			slog.ErrorContext(r.Context(), "razorpay subscription create failed", "error", res.err, "user_id", user.ID, "plan", req.Plan)
+			slog.ErrorContext(r.Context(), "razorpay subscription create failed",
+				"error", res.err, "user_id", user.ID, "plan", req.Plan, "elapsed_ms", elapsed.Milliseconds())
 			writeError(w, http.StatusBadGateway, "payment_gateway_error",
 				"Payment provider returned an error — please try again in a moment. If the problem persists, email contact@instanode.dev.")
 			return
 		}
+		slog.InfoContext(r.Context(), "razorpay subscription create: ok",
+			"user_id", user.ID, "plan", req.Plan, "elapsed_ms", elapsed.Milliseconds())
 		sub = res.data
 	case <-time.After(15 * time.Second):
-		slog.ErrorContext(r.Context(), "razorpay subscription create timeout", "user_id", user.ID, "plan", req.Plan)
+		slog.ErrorContext(r.Context(), "razorpay subscription create timeout",
+			"user_id", user.ID, "plan", req.Plan, "elapsed_ms", time.Since(callStart).Milliseconds())
 		writeError(w, http.StatusGatewayTimeout, "payment_gateway_timeout",
 			"Payment provider took too long to respond. Please retry in a few seconds.")
 		return
