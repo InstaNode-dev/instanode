@@ -417,23 +417,14 @@ func (s *server) handleCreateSubscription(w http.ResponseWriter, r *http.Request
 	// already, point them at cancel-then-resubscribe rather than silently
 	// creating a second one. Only when the prior sub is cancelled/completed/
 	// halted is a new subscribe allowed.
-	if user.SubscriptionStatus != nil {
-		cur := strings.ToLower(strings.TrimSpace(*user.SubscriptionStatus))
-		if cur == "active" || cur == "authenticated" || cur == "pending" || cur == "created" {
-			writeError(w, http.StatusConflict, "already_subscribed",
-				"You already have a subscription. Cancel the current one before starting a new one.")
-			return
-		}
+	if subscriptionStatusBlocksNew(user.SubscriptionStatus) {
+		writeError(w, http.StatusConflict, "already_subscribed",
+			"You already have a subscription. Cancel the current one before starting a new one.")
+		return
 	}
 
-	var planID, planLabel string
-	var totalCount int
-	switch req.Plan {
-	case "monthly":
-		planID, planLabel, totalCount = s.cfg.Razorpay.PlanIDMonthly, "Developer · Monthly", 120 // 10 years
-	case "annual":
-		planID, planLabel, totalCount = s.cfg.Razorpay.PlanIDAnnual, "Developer · Annual", 10 // 10 years
-	default:
+	planID, planLabel, totalCount, ok := planConfig(req.Plan, s.cfg.Razorpay)
+	if !ok {
 		writeError(w, http.StatusBadRequest, "invalid_plan", "plan must be 'monthly' or 'annual'.")
 		return
 	}
@@ -751,4 +742,39 @@ func (s *server) handleMigrateResource(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "token": token.String()})
+}
+
+// ── Pure helpers (testable without DB / HTTP / Razorpay) ────────────────────
+
+// planConfig maps the frontend-facing plan name ("monthly" / "annual") to the
+// Razorpay plan_id, display label, and total_count we send to
+// subscription.create. total_count caps how many times Razorpay auto-renews
+// before the subscription ends — 120 months = 10 years for monthly, 10 years
+// for annual, both effectively "until the user cancels".
+func planConfig(plan string, cfg RazorpayConfig) (planID, label string, totalCount int, ok bool) {
+	switch plan {
+	case "monthly":
+		return cfg.PlanIDMonthly, "Developer · Monthly", 120, true
+	case "annual":
+		return cfg.PlanIDAnnual, "Developer · Annual", 10, true
+	}
+	return "", "", 0, false
+}
+
+// subscriptionStatusBlocksNew reports whether an existing subscription in the
+// given state should prevent a user from starting a new one. Active /
+// authenticated / pending / created = don't let the user double-subscribe;
+// cancelled / halted / completed / nil = let them start fresh. Status match
+// is case- and whitespace-insensitive because Razorpay has been known to
+// capitalise inconsistently.
+func subscriptionStatusBlocksNew(status *string) bool {
+	if status == nil {
+		return false
+	}
+	s := strings.ToLower(strings.TrimSpace(*status))
+	switch s {
+	case "active", "authenticated", "pending", "created":
+		return true
+	}
+	return false
 }

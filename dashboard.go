@@ -75,58 +75,8 @@ func (s *server) handleGetPlan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	humanLabel := "Free tier — resources expire in 24h"
-	if user.PlanTier == "paid" {
-		periodLabel := "Monthly · $12/mo"
-		if user.PlanPeriod == "annual" {
-			periodLabel = "Annual · $120/yr"
-		}
-		subStatus := ""
-		if user.SubscriptionStatus != nil {
-			subStatus = *user.SubscriptionStatus
-		}
-		renewalPart := ""
-		if user.CurrentPeriodEnd != nil && !user.CurrentPeriodEnd.IsZero() {
-			renewalPart = " · renews " + user.CurrentPeriodEnd.Format("2006-01-02")
-			if subStatus == "cancelled" {
-				renewalPart = " · ends " + user.CurrentPeriodEnd.Format("2006-01-02")
-			}
-		}
-		humanLabel = "Developer · " + periodLabel + renewalPart
-		if subStatus == "cancelled" {
-			humanLabel += " (cancellation scheduled)"
-		} else if subStatus == "halted" {
-			humanLabel += " (payment halted — please update your card)"
-		}
-	}
-
-	// Upgrade paths surfaced for agents + UI. Each entry is a self-describing
-	// instruction (method/url/body/auth) so an LLM can subscribe without
-	// scraping any other docs. Paid users on monthly see annual as an option;
-	// annual users see only cancel (no further upgrade).
-	upgrades := []map[string]any{}
-	instruction := func(plan, label string, price int, interval string) map[string]any {
-		return map[string]any{
-			"plan":             plan,
-			"label":            label,
-			"price_usd":        price,
-			"billing_interval": interval,
-			"how_to_subscribe": map[string]any{
-				"method":            "POST",
-				"url":               "https://api.instanode.dev/billing/create-subscription",
-				"headers":           map[string]string{"Authorization": "Bearer <INSTANODE_TOKEN>", "Content-Type": "application/json"},
-				"body":              map[string]string{"plan": plan},
-				"response_field":    "short_url",
-				"notes":             "Open short_url in a browser to complete the subscription (mandate + first charge).",
-			},
-		}
-	}
-	if user.PlanTier != "paid" {
-		upgrades = append(upgrades, instruction("monthly", "Developer · Monthly", 12, "month"))
-		upgrades = append(upgrades, instruction("annual", "Developer · Annual (2 months free)", 120, "year"))
-	} else if user.PlanPeriod == "monthly" {
-		upgrades = append(upgrades, instruction("annual", "Developer · Annual (2 months free)", 120, "year"))
-	}
+	humanLabel := buildHumanPlanLabel(user)
+	upgrades := buildAvailableUpgrades(user)
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"plan_tier":                user.PlanTier,
@@ -346,4 +296,73 @@ func (s *server) handleClaimToken(w http.ResponseWriter, r *http.Request) {
 		"tier":          newTier,
 		"status":        "active",
 	})
+}
+// ── Pure helpers (testable without DB / HTTP) ───────────────────────────────
+
+// buildHumanPlanLabel renders the one-line plan label surfaced on the
+// dashboard banner. Branches on plan_tier / plan_period / subscription_status
+// / current_period_end so the UI doesn't have to re-implement the logic.
+func buildHumanPlanLabel(user *User) string {
+	if user == nil {
+		return ""
+	}
+	if user.PlanTier != "paid" {
+		return "Free tier — resources expire in 24h"
+	}
+	periodLabel := "Monthly · $12/mo"
+	if user.PlanPeriod == "annual" {
+		periodLabel = "Annual · $120/yr"
+	}
+	subStatus := ""
+	if user.SubscriptionStatus != nil {
+		subStatus = *user.SubscriptionStatus
+	}
+	renewalPart := ""
+	if user.CurrentPeriodEnd != nil && !user.CurrentPeriodEnd.IsZero() {
+		if subStatus == "cancelled" {
+			renewalPart = " · ends " + user.CurrentPeriodEnd.Format("2006-01-02")
+		} else {
+			renewalPart = " · renews " + user.CurrentPeriodEnd.Format("2006-01-02")
+		}
+	}
+	label := "Developer · " + periodLabel + renewalPart
+	switch subStatus {
+	case "cancelled":
+		label += " (cancellation scheduled)"
+	case "halted":
+		label += " (payment halted — please update your card)"
+	}
+	return label
+}
+
+// buildAvailableUpgrades returns the list of upgrade paths relevant to the
+// caller's current plan. Surface area for LLM agents: each item is a
+// self-describing instruction (method/url/body/auth) so the agent can
+// subscribe without scraping docs. Free → monthly + annual; paid monthly →
+// annual; paid annual → none (cancellation-only).
+func buildAvailableUpgrades(user *User) []map[string]any {
+	upgrades := []map[string]any{}
+	instruction := func(plan, label string, price int, interval string) map[string]any {
+		return map[string]any{
+			"plan":             plan,
+			"label":            label,
+			"price_usd":        price,
+			"billing_interval": interval,
+			"how_to_subscribe": map[string]any{
+				"method":         "POST",
+				"url":            "https://api.instanode.dev/billing/create-subscription",
+				"headers":        map[string]string{"Authorization": "Bearer <INSTANODE_TOKEN>", "Content-Type": "application/json"},
+				"body":           map[string]string{"plan": plan},
+				"response_field": "short_url",
+				"notes":          "Open short_url in a browser to complete the subscription (mandate + first charge).",
+			},
+		}
+	}
+	if user == nil || user.PlanTier != "paid" {
+		upgrades = append(upgrades, instruction("monthly", "Developer · Monthly", 12, "month"))
+		upgrades = append(upgrades, instruction("annual", "Developer · Annual (2 months free)", 120, "year"))
+	} else if user.PlanPeriod == "monthly" {
+		upgrades = append(upgrades, instruction("annual", "Developer · Annual (2 months free)", 120, "year"))
+	}
+	return upgrades
 }
