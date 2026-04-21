@@ -61,12 +61,12 @@ func TestSubscriptionStatusBlocksNew(t *testing.T) {
 		{s("halted"), false},
 		{s("completed"), false},
 		{s("expired"), false},
+		{s("created"), false},  // short_url reserved, not yet authenticated — safe to replace
+		{s("pending"), false},  // retry in flight, safe to replace
 		{s("active"), true},
 		{s("authenticated"), true},
-		{s("pending"), true},
-		{s("created"), true},
 		{s("  ACTIVE  "), true}, // whitespace + case insensitive
-		{s("Created"), true},
+		{s("Authenticated"), true},
 	}
 	for _, tc := range tests {
 		name := "nil"

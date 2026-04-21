@@ -208,12 +208,25 @@ func (s *server) handleRazorpayWebhook(w http.ResponseWriter, r *http.Request) {
 		s.handlePaymentCaptured(ctx, paymentEntity, dedupID)
 	case "payment.failed":
 		orderID, _ := paymentEntity["order_id"].(string)
+		subID, _ := paymentEntity["subscription_id"].(string)
 		reason, _ := paymentEntity["error_description"].(string)
 		if reason == "" {
 			reason, _ = paymentEntity["error_reason"].(string)
 		}
-		slog.Warn("razorpay payment failed", "dedup_id", dedupID, "order_id", orderID, "reason", reason)
+		slog.Warn("razorpay payment failed", "dedup_id", dedupID, "order_id", orderID, "sub_id", subID, "reason", reason)
 		s.notifyPaymentFailed(ctx, orderID, reason)
+		// If this failure is the first charge on a subscription, the user's
+		// subscription row in our DB is stuck at status='created' with a
+		// sub_id pointing at a Razorpay subscription that'll never activate.
+		// Clear it so their next Subscribe click starts clean — otherwise
+		// the already_subscribed guard traps them indefinitely.
+		if subID != "" {
+			if _, err := s.db.ExecContext(ctx,
+				`UPDATE users SET razorpay_subscription_id = NULL, subscription_status = NULL
+				 WHERE razorpay_subscription_id = $1`, subID); err != nil {
+				slog.WarnContext(ctx, "clear stuck subscription after payment.failed", "error", err, "sub_id", subID)
+			}
+		}
 	case "subscription.activated", "subscription.charged":
 		s.handleSubscriptionCharged(ctx, subEntity, paymentEntity)
 	case "subscription.halted":
@@ -762,18 +775,21 @@ func planConfig(plan string, cfg RazorpayConfig) (planID, label string, totalCou
 }
 
 // subscriptionStatusBlocksNew reports whether an existing subscription in the
-// given state should prevent a user from starting a new one. Active /
-// authenticated / pending / created = don't let the user double-subscribe;
-// cancelled / halted / completed / nil = let them start fresh. Status match
-// is case- and whitespace-insensitive because Razorpay has been known to
-// capitalise inconsistently.
+// given state should prevent a user from starting a new one. We only block
+// when the subscription is materially live — `active` (currently charging)
+// or `authenticated` (mandate completed, first charge imminent). `created`
+// is Razorpay's "short_url reserved but nothing confirmed" state; `pending`
+// means a retry is in flight. Either can be abandoned by starting fresh —
+// forcing the user to cancel a never-authenticated subscription creates the
+// dead-end UX we hit when a user's test card got declined mid-checkout.
+// Match is case- and whitespace-insensitive.
 func subscriptionStatusBlocksNew(status *string) bool {
 	if status == nil {
 		return false
 	}
 	s := strings.ToLower(strings.TrimSpace(*status))
 	switch s {
-	case "active", "authenticated", "pending", "created":
+	case "active", "authenticated":
 		return true
 	}
 	return false
