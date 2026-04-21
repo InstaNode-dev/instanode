@@ -14,6 +14,7 @@ import (
 	"time"
 
 	_ "github.com/lib/pq"
+	razorpay "github.com/razorpay/razorpay-go"
 	"github.com/redis/go-redis/v9"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"go.opentelemetry.io/otel/attribute"
@@ -159,6 +160,27 @@ func main() {
 	// Health
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "service": "instant-lite"})
+	})
+
+	// Temporary egress diagnostic: GET /debug/razorpay-ping returns how long
+	// Razorpay's /v1/subscriptions takes from inside the container. Gate:
+	// requires ?token=<JWT_SECRET> so only the operator can hit it.
+	mux.HandleFunc("GET /debug/razorpay-ping", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("token") != cfg.JWT.Secret {
+			writeError(w, http.StatusUnauthorized, "unauthorized", "debug endpoint — token required")
+			return
+		}
+		start := time.Now()
+		client := razorpay.NewClient(cfg.Razorpay.KeyID, cfg.Razorpay.KeySecret)
+		// Call the simplest GET — /v1/subscriptions — with a small page to
+		// time just the HTTP + auth round-trip.
+		_, err := client.Subscription.All(map[string]interface{}{"count": 1}, nil)
+		elapsed := time.Since(start)
+		if err != nil {
+			writeJSON(w, http.StatusOK, map[string]any{"ok": false, "elapsed_ms": elapsed.Milliseconds(), "error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "elapsed_ms": elapsed.Milliseconds()})
 	})
 	// Readiness: pings every downstream dependency (platform PG, Valkey,
 	// customer PG via PgBouncer). Used by external monitoring — NOT yet
