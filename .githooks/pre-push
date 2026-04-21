@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# pre-push: refuse direct pushes to master. Open a PR instead.
+# Emergency bypass: git push --no-verify
+
+set -eu
+
+protected="refs/heads/master"
+
+while IFS=' ' read -r local_ref local_sha remote_ref remote_sha; do
+  [ -z "${remote_ref:-}" ] && continue
+
+  if [ "$remote_ref" = "$protected" ]; then
+    echo "pre-push: refusing direct push to master." >&2
+    echo "pre-push: open a PR instead, or bypass with 'git push --no-verify'." >&2
+    exit 1
+  fi
+done
+
+exit 0
