@@ -140,6 +140,13 @@ func main() {
 	mux.HandleFunc("POST /webhooks/razorpay", s.handleRazorpayWebhook)
 	mux.HandleFunc("POST /billing/migrate", s.handleMigrateResource)
 
+	// Scheduled plan switch (monthly ↔ annual). Both endpoints 404 when the
+	// feature flag is off. POST records the intent; DELETE cancels a still-
+	// pending switch. The Razorpay cancel+create dance runs later from the
+	// billing reconciler at current_period_end.
+	mux.HandleFunc("POST /billing/change-plan", s.handleChangePlan)
+	mux.HandleFunc("DELETE /billing/change-plan", s.handleCancelPlanChange)
+
 	// Cancellation is intentionally handled entirely outside the API: the
 	// operator cancels from the Razorpay dashboard → subscription.cancelled
 	// webhook fires → handleSubscriptionCancelled updates the DB and emails

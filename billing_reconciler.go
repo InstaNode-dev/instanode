@@ -135,6 +135,19 @@ func startBillingReconciler(db *sql.DB, cfg *Config, em *emailer) {
 			} else if n > 0 {
 				slog.Info("billing reconciler: actioned", "count", n)
 			}
+
+			// Plan-switch promotions share the tick cadence. Separate bounded
+			// context so a slow Razorpay round-trip on the promotion side
+			// cannot starve the main reconcile pass above. No-op when the
+			// feature flag is off.
+			psCtx, psCancel := context.WithTimeout(context.Background(), billingReconcileTickTimeout)
+			if promoted, perr := promotePendingPlanSwitches(psCtx, db, cfg, liveRazorpayCancelSub, liveRazorpayCreateSub, time.Now()); perr != nil {
+				slog.Warn("plan switch reconciler: tick failed", "error", perr)
+			} else if promoted > 0 {
+				slog.Info("plan switch reconciler: promoted", "count", promoted)
+			}
+			psCancel()
+
 			<-ticker.C
 		}
 	}()

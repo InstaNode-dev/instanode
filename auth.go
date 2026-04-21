@@ -39,6 +39,14 @@ type User struct {
 	RazorpaySubscriptionID *string    `json:"razorpay_subscription_id,omitempty"`
 	SubscriptionStatus     *string    `json:"subscription_status,omitempty"`
 	CurrentPeriodEnd       *time.Time `json:"current_period_end,omitempty"`
+	// Pending plan-switch columns. Populated when a user has clicked
+	// "Switch to <other plan>" but the effective date (current_period_end)
+	// has not yet been reached. PendingPlanSubID is filled by the reconciler
+	// once the new Razorpay sub is created; until then the switch is still
+	// cancellable via DELETE /billing/change-plan.
+	PendingPlanChange      *string    `json:"pending_plan_change,omitempty"`
+	PendingPlanEffectiveAt *time.Time `json:"pending_plan_effective_at,omitempty"`
+	PendingPlanSubID       *string    `json:"pending_plan_sub_id,omitempty"`
 	CreatedAt              time.Time  `json:"created_at"`
 }
 
@@ -101,11 +109,13 @@ func (s *server) authUser(r *http.Request) *User {
 	var user User
 	qerr := s.db.QueryRowContext(ctx,
 		`SELECT id, github_id, email, razorpay_customer_id, plan_tier, plan_period, plan_paid_at,
-		        razorpay_subscription_id, subscription_status, current_period_end, created_at
+		        razorpay_subscription_id, subscription_status, current_period_end,
+		        pending_plan_change, pending_plan_effective_at, pending_plan_sub_id, created_at
 		 FROM users WHERE id = $1`, claims.UserID,
 	).Scan(&user.ID, &user.GitHubID, &user.Email, &user.RazorpayCustomerID,
 		&user.PlanTier, &user.PlanPeriod, &user.PlanPaidAt,
-		&user.RazorpaySubscriptionID, &user.SubscriptionStatus, &user.CurrentPeriodEnd, &user.CreatedAt)
+		&user.RazorpaySubscriptionID, &user.SubscriptionStatus, &user.CurrentPeriodEnd,
+		&user.PendingPlanChange, &user.PendingPlanEffectiveAt, &user.PendingPlanSubID, &user.CreatedAt)
 	if qerr != nil {
 		return nil
 	}
@@ -127,11 +137,13 @@ func (s *server) getUserFromRequest(r *http.Request) (*User, error) {
 	var user User
 	err = s.db.QueryRowContext(ctx,
 		`SELECT id, github_id, email, razorpay_customer_id, plan_tier, plan_period, plan_paid_at,
-		        razorpay_subscription_id, subscription_status, current_period_end, created_at
+		        razorpay_subscription_id, subscription_status, current_period_end,
+		        pending_plan_change, pending_plan_effective_at, pending_plan_sub_id, created_at
 		 FROM users WHERE id = $1`, claims.UserID,
 	).Scan(&user.ID, &user.GitHubID, &user.Email, &user.RazorpayCustomerID,
 		&user.PlanTier, &user.PlanPeriod, &user.PlanPaidAt,
-		&user.RazorpaySubscriptionID, &user.SubscriptionStatus, &user.CurrentPeriodEnd, &user.CreatedAt)
+		&user.RazorpaySubscriptionID, &user.SubscriptionStatus, &user.CurrentPeriodEnd,
+		&user.PendingPlanChange, &user.PendingPlanEffectiveAt, &user.PendingPlanSubID, &user.CreatedAt)
 	if err != nil {
 		return nil, err
 	}

@@ -587,6 +587,12 @@ func (s *server) handleCreateSubscription(w http.ResponseWriter, r *http.Request
 // handleSubscriptionCharged runs on both subscription.activated (first charge)
 // and subscription.charged (recurring). Promotes the user to paid, rolls forward
 // current_period_end, sends a receipt.
+//
+// Plan-switch branch: when notes.purpose == "plan_switch", this is the first
+// charge on the *new* sub the reconciler created. We clear the pending_plan_*
+// columns so the switch is marked complete, and fire the one-time
+// planSwitchActivatedEmail via its claim helper. The normal receipt email
+// still goes out below — the switch email is separate, content-wise.
 func (s *server) handleSubscriptionCharged(ctx context.Context, subEntity, paymentEntity map[string]interface{}) {
 	subID, _ := subEntity["id"].(string)
 	if subID == "" {
@@ -601,6 +607,8 @@ func (s *server) handleSubscriptionCharged(ctx context.Context, subEntity, payme
 
 	periodEnd := unixToTime(subEntity["current_end"])
 	period := periodFromSubscription(subEntity)
+	purpose, _ := notes["purpose"].(string)
+	isSwitchCharge := purpose == "plan_switch"
 
 	if _, err := s.db.ExecContext(ctx,
 		`UPDATE users
@@ -612,6 +620,27 @@ func (s *server) handleSubscriptionCharged(ctx context.Context, subEntity, payme
 	); err != nil {
 		slog.Error("subscription.charged: user update failed", "error", err, "user_id", userID, "sub_id", subID)
 		return
+	}
+
+	// Plan-switch activation: clear pending_* columns so the switch is marked
+	// complete on our side. Done as a separate UPDATE so the main promotion
+	// UPDATE above (which is idempotent across renewals) stays unchanged on
+	// recurring charges. The claim helper below is what atomically sends the
+	// "you're now on <plan>" email — safe to call even when another caller
+	// (reconciler sweep) just did the same.
+	if isSwitchCharge {
+		if _, err := s.db.ExecContext(ctx,
+			`UPDATE users
+			   SET pending_plan_change     = NULL,
+			       pending_plan_effective_at = NULL,
+			       pending_plan_sub_id     = NULL
+			 WHERE id                       = $1`,
+			userID,
+		); err != nil {
+			slog.Error("subscription.charged (plan_switch): clear pending failed",
+				"error", err, "user_id", userID, "sub_id", subID)
+		}
+		sendPlanSwitchActivatedIfUnsent(ctx, s.db, s.email, userID)
 	}
 
 	// Claim any pre-payment anon token captured in notes.token — same semantics
@@ -690,9 +719,18 @@ func (s *server) handleSubscriptionCancelled(ctx context.Context, subEntity map[
 	}
 
 	periodEnd := unixToTime(subEntity["current_end"])
+	// An outright cancel takes precedence over a pending plan switch — if the
+	// user (or Razorpay) cancels the current sub, we don't want the reconciler
+	// to then fire a *new* sub for the switch they're walking away from. Clear
+	// the pending_plan_* columns in the same UPDATE so the abandonment is atomic.
 	if periodEnd.IsZero() {
 		if _, err := s.db.ExecContext(ctx,
-			"UPDATE users SET subscription_status = 'cancelled' WHERE id = $1",
+			`UPDATE users
+			    SET subscription_status       = 'cancelled',
+			        pending_plan_change       = NULL,
+			        pending_plan_effective_at = NULL,
+			        pending_plan_sub_id       = NULL
+			  WHERE id                        = $1`,
 			userID,
 		); err != nil {
 			slog.Error("subscription.cancelled: persist failed", "error", err, "user_id", userID)
@@ -700,7 +738,13 @@ func (s *server) handleSubscriptionCancelled(ctx context.Context, subEntity map[
 		}
 	} else {
 		if _, err := s.db.ExecContext(ctx,
-			"UPDATE users SET subscription_status = 'cancelled', current_period_end = $1 WHERE id = $2",
+			`UPDATE users
+			    SET subscription_status       = 'cancelled',
+			        current_period_end        = $1,
+			        pending_plan_change       = NULL,
+			        pending_plan_effective_at = NULL,
+			        pending_plan_sub_id       = NULL
+			  WHERE id                        = $2`,
 			periodEnd, userID,
 		); err != nil {
 			slog.Error("subscription.cancelled: persist failed", "error", err, "user_id", userID)

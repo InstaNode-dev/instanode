@@ -27,6 +27,16 @@ type Config struct {
 	Email         EmailConfig         `yaml:"email"`
 	Admin         AdminConfig         `yaml:"admin"`
 	Observability ObservabilityConfig `yaml:"observability"`
+	Features      FeaturesConfig      `yaml:"features"`
+}
+
+// FeaturesConfig gates feature flags that default off for safe rollout.
+// Toggle via env var (ENABLE_PLAN_SWITCH=1) or config YAML.
+type FeaturesConfig struct {
+	// EnablePlanSwitch controls POST/DELETE /billing/change-plan + the
+	// pending-switch fields on GET /api/me/plan. When false, the endpoints
+	// return 404 and the plan-switch reconciler pass is skipped.
+	EnablePlanSwitch bool `yaml:"enable_plan_switch"`
 }
 
 // AdminConfig gates admin-only endpoints (e.g. /admin/inbox) to a single
@@ -342,6 +352,9 @@ func (c *Config) overrideWithEnv() {
 	}
 	if v := os.Getenv("ADMIN_EMAIL"); v != "" {
 		c.Admin.Email = v
+	}
+	if v := os.Getenv("ENABLE_PLAN_SWITCH"); v != "" {
+		c.Features.EnablePlanSwitch = strings.EqualFold(v, "true") || v == "1"
 	}
 }
 

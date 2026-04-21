@@ -127,6 +127,63 @@ func subscriptionCancelledEmail(plan string, periodEnd time.Time) (subject, html
 	return
 }
 
+// planSwitchScheduledEmail is sent immediately after POST /billing/change-plan
+// succeeds. fromPlan / toPlan are the human labels (from planLabelFor).
+// effectiveAt is the current_period_end at request time — when the switch will
+// actually fire. The user stays on fromPlan until that boundary.
+func planSwitchScheduledEmail(fromPlan, toPlan string, effectiveAt time.Time) (subject, html string) {
+	subject = "Plan switch scheduled — instanode"
+	when := "the end of your current billing period"
+	if !effectiveAt.IsZero() {
+		when = effectiveAt.Format("2006-01-02")
+	}
+	html = fmt.Sprintf(`<!doctype html>
+<html><body style="font-family:system-ui,sans-serif;max-width:560px;margin:0 auto;padding:24px;color:#222;">
+<p>You've scheduled a switch from <strong>%s</strong> to <strong>%s</strong>.</p>
+<p>The switch becomes effective on <strong>%s</strong>. Your current plan keeps running until then — no charge today.</p>
+<p>If you change your mind, open your <a href="https://instanode.dev/dashboard.html">dashboard</a> and click <strong>Keep current plan</strong> before that date.</p>
+<p style="color:#888;font-size:11px;margin-top:32px;">For any issues or queries, contact <a href="mailto:contact@instanode.dev" style="color:#888;">contact@instanode.dev</a>.</p>
+</body></html>`, fromPlan, toPlan, when)
+	return
+}
+
+// planSwitchActivatedEmail fires once, after the reconciler has flipped the
+// subscription to the new plan and the first charge on the new plan has
+// landed. A separate receipt email for the charge amount follows through the
+// normal subscription.charged path.
+func planSwitchActivatedEmail(newPlan string, nextRenewal time.Time) (subject, html string) {
+	subject = "You're now on " + newPlan
+	renewal := ""
+	if !nextRenewal.IsZero() {
+		renewal = fmt.Sprintf("Next renewal: <strong>%s</strong>.", nextRenewal.Format("2006-01-02"))
+	}
+	html = fmt.Sprintf(`<!doctype html>
+<html><body style="font-family:system-ui,sans-serif;max-width:560px;margin:0 auto;padding:24px;">
+<p>Your plan switch is live. You're now on <strong>%s</strong>.</p>
+<p>%s A separate payment receipt will follow for this charge.</p>
+<p>Resources on your account stay permanent. Dashboard: <a href="https://instanode.dev/dashboard.html">instanode.dev/dashboard.html</a></p>
+<p style="color:#888;font-size:11px;margin-top:32px;">For any issues or queries, contact <a href="mailto:contact@instanode.dev" style="color:#888;">contact@instanode.dev</a>.</p>
+</body></html>`, newPlan, renewal)
+	return
+}
+
+// planSwitchCancelledEmail is sent when DELETE /billing/change-plan is called
+// *after* planSwitchScheduledEmail has already fired. If the scheduled email
+// never made it out (same-second cancel, or SMTP dropped), the handler skips
+// this one — the user was never told the switch was coming, so telling them
+// it's "cancelled" would be confusing.
+func planSwitchCancelledEmail(stayingOn, dropped string) (subject, html string) {
+	subject = "Plan switch cancelled — staying on " + stayingOn
+	html = fmt.Sprintf(`<!doctype html>
+<html><body style="font-family:system-ui,sans-serif;max-width:560px;margin:0 auto;padding:24px;">
+<p>Your scheduled switch to <strong>%s</strong> has been cancelled.</p>
+<p>You'll stay on <strong>%s</strong> — your next renewal date is unchanged.</p>
+<p>If this wasn't you, reply to this email or <a href="mailto:contact@instanode.dev">contact@instanode.dev</a>.</p>
+<p style="color:#888;font-size:11px;margin-top:32px;">For any issues or queries, contact <a href="mailto:contact@instanode.dev" style="color:#888;">contact@instanode.dev</a>.</p>
+</body></html>`, dropped, stayingOn)
+	return
+}
+
 func receiptEmail(plan string, amountCents int, currency string, periodEnd time.Time) (subject, html string) {
 	amount := fmt.Sprintf("%.2f %s", float64(amountCents)/100.0, currency)
 	subject = "Payment received — instanode Developer plan"

@@ -157,3 +157,139 @@ func sendCancelIfUnsent(ctx context.Context, db *sql.DB, em *emailer, userID uui
 	em.SendAsync(claim.Email, subject, html)
 	slog.Info("billing email: cancel claimed + sent", "user_id", userID, "period", claim.Period)
 }
+
+// planSwitchScheduledClaim carries the data needed to compose a
+// "switch scheduled" email.
+type planSwitchScheduledClaim struct {
+	Email       string
+	FromPeriod  string // "monthly" | "annual"
+	ToPeriod    string
+	EffectiveAt time.Time
+}
+
+// claimPlanSwitchScheduledEmail reserves the right to send one
+// planSwitchScheduledEmail per (user, pending_plan_change). The claim is
+// released when the handler calls UPDATE users SET pending_plan_change=$1,
+// plan_switch_scheduled_email_sent_at=NULL — so a second switch request
+// (after the first has been cancelled + re-initiated) still fires the email.
+//
+// Slot-not-claimed = (plan_switch_scheduled_email_sent_at IS NULL
+//                     AND pending_plan_change IS NOT NULL).
+func claimPlanSwitchScheduledEmail(ctx context.Context, db *sql.DB, userID uuid.UUID) (planSwitchScheduledClaim, bool) {
+	var (
+		email       string
+		fromPeriod  string
+		toPeriod    string
+		effectiveAt *time.Time
+	)
+	err := db.QueryRowContext(ctx, `
+		UPDATE users
+		   SET plan_switch_scheduled_email_sent_at = NOW()
+		 WHERE id = $1
+		   AND pending_plan_change IS NOT NULL
+		   AND plan_switch_scheduled_email_sent_at IS NULL
+		RETURNING email, COALESCE(plan_period,'monthly'),
+		          pending_plan_change, pending_plan_effective_at`,
+		userID,
+	).Scan(&email, &fromPeriod, &toPeriod, &effectiveAt)
+	if err != nil {
+		if err != sql.ErrNoRows {
+			slog.Warn("claimPlanSwitchScheduledEmail: query failed", "error", err, "user_id", userID)
+		}
+		return planSwitchScheduledClaim{}, false
+	}
+	end := time.Time{}
+	if effectiveAt != nil {
+		end = *effectiveAt
+	}
+	return planSwitchScheduledClaim{
+		Email:       email,
+		FromPeriod:  fromPeriod,
+		ToPeriod:    toPeriod,
+		EffectiveAt: end,
+	}, true
+}
+
+// sendPlanSwitchScheduledIfUnsent claims + sends the scheduled email.
+// Only one call-site today (handleChangePlan) but the claim-lock keeps us
+// safe if a retried request races.
+func sendPlanSwitchScheduledIfUnsent(ctx context.Context, db *sql.DB, em *emailer, userID uuid.UUID) {
+	if em == nil {
+		return
+	}
+	claim, ok := claimPlanSwitchScheduledEmail(ctx, db, userID)
+	if !ok || claim.Email == "" {
+		return
+	}
+	subject, html := planSwitchScheduledEmail(
+		planLabelFor(claim.FromPeriod),
+		planLabelFor(claim.ToPeriod),
+		claim.EffectiveAt,
+	)
+	em.SendAsync(claim.Email, subject, html)
+	slog.Info("billing email: plan_switch scheduled claimed + sent",
+		"user_id", userID, "from", claim.FromPeriod, "to", claim.ToPeriod)
+}
+
+// planSwitchActivatedClaim carries the data for the "switch is live" email.
+type planSwitchActivatedClaim struct {
+	Email       string
+	NewPeriod   string
+	NextRenewal time.Time
+}
+
+// claimPlanSwitchActivatedEmail reserves the right to send one
+// planSwitchActivatedEmail per activation. Slot-not-claimed =
+// plan_switch_activated_email_sent_at IS NULL AND the user just flipped
+// to the new plan (plan_paid_at >= the previous switch's completion).
+//
+// Two call-sites race here: the reconciler's post-activate sweep and the
+// webhook handler for subscription.activated with notes.purpose="plan_switch".
+// The atomic UPDATE guarantees one wins.
+func claimPlanSwitchActivatedEmail(ctx context.Context, db *sql.DB, userID uuid.UUID) (planSwitchActivatedClaim, bool) {
+	var (
+		email     string
+		newPeriod string
+		periodEnd *time.Time
+	)
+	err := db.QueryRowContext(ctx, `
+		UPDATE users
+		   SET plan_switch_activated_email_sent_at = NOW()
+		 WHERE id = $1
+		   AND plan_switch_activated_email_sent_at IS NULL
+		   AND pending_plan_change IS NULL
+		   AND plan_tier = 'paid'
+		RETURNING email, COALESCE(plan_period,'monthly'), current_period_end`,
+		userID,
+	).Scan(&email, &newPeriod, &periodEnd)
+	if err != nil {
+		if err != sql.ErrNoRows {
+			slog.Warn("claimPlanSwitchActivatedEmail: query failed", "error", err, "user_id", userID)
+		}
+		return planSwitchActivatedClaim{}, false
+	}
+	renewal := time.Time{}
+	if periodEnd != nil {
+		renewal = *periodEnd
+	}
+	return planSwitchActivatedClaim{
+		Email:       email,
+		NewPeriod:   newPeriod,
+		NextRenewal: renewal,
+	}, true
+}
+
+// sendPlanSwitchActivatedIfUnsent claims + sends the "you're now on X" email.
+func sendPlanSwitchActivatedIfUnsent(ctx context.Context, db *sql.DB, em *emailer, userID uuid.UUID) {
+	if em == nil {
+		return
+	}
+	claim, ok := claimPlanSwitchActivatedEmail(ctx, db, userID)
+	if !ok || claim.Email == "" {
+		return
+	}
+	subject, html := planSwitchActivatedEmail(planLabelFor(claim.NewPeriod), claim.NextRenewal)
+	em.SendAsync(claim.Email, subject, html)
+	slog.Info("billing email: plan_switch activated claimed + sent",
+		"user_id", userID, "period", claim.NewPeriod)
+}

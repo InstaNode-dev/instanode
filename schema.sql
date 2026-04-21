@@ -36,6 +36,21 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS current_period_end TIMESTAMPTZ;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS receipt_email_sent_at TIMESTAMPTZ;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS cancel_email_sent_at  TIMESTAMPTZ;
 
+-- Plan-switch (monthly ↔ annual). The switch is scheduled — we don't tear
+-- down the current subscription the moment the user clicks, because the
+-- charge they already paid for is still running. pending_plan_effective_at
+-- is set to the current_period_end at request time, so the switch fires
+-- cleanly at the boundary. pending_plan_sub_id holds the Razorpay sub id
+-- for the new plan once the reconciler has created it; until then it's
+-- NULL and the switch can still be cancelled by DELETE /billing/change-plan.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS pending_plan_change        TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS pending_plan_effective_at  TIMESTAMPTZ;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS pending_plan_sub_id        TEXT;
+
+-- Plan-switch email idempotency. Same claim-lock pattern as receipt/cancel.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS plan_switch_scheduled_email_sent_at TIMESTAMPTZ;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS plan_switch_activated_email_sent_at TIMESTAMPTZ;
+
 CREATE TABLE IF NOT EXISTS resources (
     id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     token           UUID NOT NULL UNIQUE DEFAULT uuid_generate_v4(),

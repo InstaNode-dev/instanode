@@ -78,7 +78,7 @@ func (s *server) handleGetPlan(w http.ResponseWriter, r *http.Request) {
 	humanLabel := buildHumanPlanLabel(user)
 	upgrades := buildAvailableUpgrades(user)
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	payload := map[string]any{
 		"plan_tier":                user.PlanTier,
 		"plan_period":              user.PlanPeriod,
 		"plan_paid_at":             user.PlanPaidAt,
@@ -87,7 +87,17 @@ func (s *server) handleGetPlan(w http.ResponseWriter, r *http.Request) {
 		"razorpay_subscription_id": user.RazorpaySubscriptionID,
 		"human_label":              humanLabel,
 		"available_upgrades":       upgrades,
-	})
+	}
+
+	// Plan-switch fields only appear when the feature flag is on. Dashboards
+	// running against an older server (flag off) see the stable legacy shape
+	// — no UI surface to probe, so the feature stays fully hidden.
+	if s.cfg.Features.EnablePlanSwitch {
+		payload["pending_plan_change"] = user.PendingPlanChange
+		payload["pending_plan_effective_at"] = user.PendingPlanEffectiveAt
+	}
+
+	writeJSON(w, http.StatusOK, payload)
 }
 
 // ── GET /api/me/token ───────────────────────────────────────────────────────
@@ -302,6 +312,12 @@ func (s *server) handleClaimToken(w http.ResponseWriter, r *http.Request) {
 // buildHumanPlanLabel renders the one-line plan label surfaced on the
 // dashboard banner. Branches on plan_tier / plan_period / subscription_status
 // / current_period_end so the UI doesn't have to re-implement the logic.
+//
+// A pending plan switch is surfaced with its own suffix ("switching to <X>")
+// so the dashboard shows the scheduled change at a glance without having to
+// cross-reference pending_plan_change separately. It only takes effect when
+// the subscription is still active — if the user cancelled, the cancellation
+// wording takes priority.
 func buildHumanPlanLabel(user *User) string {
 	if user == nil {
 		return ""
@@ -321,8 +337,17 @@ func buildHumanPlanLabel(user *User) string {
 	switch subStatus {
 	case "cancelled":
 		label = "Developer · " + periodLabel + " · cancellation scheduled"
+		return label
 	case "halted":
 		label = "Developer · " + periodLabel + " · payment halted — update your card"
+		return label
+	}
+	if user.PendingPlanChange != nil && *user.PendingPlanChange != "" {
+		target := "Annual · $120/yr"
+		if *user.PendingPlanChange == "monthly" {
+			target = "Monthly · $12/mo"
+		}
+		label = "Developer · " + periodLabel + " · switching to " + target
 	}
 	return label
 }
@@ -354,7 +379,12 @@ func buildAvailableUpgrades(user *User) []map[string]any {
 		upgrades = append(upgrades, instruction("monthly", "Developer · Monthly", 12, "month"))
 		upgrades = append(upgrades, instruction("annual", "Developer · Annual (2 months free)", 120, "year"))
 	} else if user.PlanPeriod == "monthly" {
-		upgrades = append(upgrades, instruction("annual", "Developer · Annual (2 months free)", 120, "year"))
+		// Suppress the "subscribe to annual" upgrade path when a switch is
+		// already scheduled — the user should cancel the scheduled switch
+		// before initiating a brand-new subscription.
+		if user.PendingPlanChange == nil || *user.PendingPlanChange == "" {
+			upgrades = append(upgrades, instruction("annual", "Developer · Annual (2 months free)", 120, "year"))
+		}
 	}
 	return upgrades
 }
