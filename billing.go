@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -412,6 +413,19 @@ func (s *server) handleCreateSubscription(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	// Block double-subscribe: if the user has an active / pending subscription
+	// already, point them at cancel-then-resubscribe rather than silently
+	// creating a second one. Only when the prior sub is cancelled/completed/
+	// halted is a new subscribe allowed.
+	if user.SubscriptionStatus != nil {
+		cur := strings.ToLower(strings.TrimSpace(*user.SubscriptionStatus))
+		if cur == "active" || cur == "authenticated" || cur == "pending" || cur == "created" {
+			writeError(w, http.StatusConflict, "already_subscribed",
+				"You already have a subscription. Cancel the current one before starting a new one.")
+			return
+		}
+	}
+
 	var planID, planLabel string
 	var totalCount int
 	switch req.Plan {
@@ -435,16 +449,40 @@ func (s *server) handleCreateSubscription(w http.ResponseWriter, r *http.Request
 		}
 	}
 
-	client := razorpay.NewClient(s.cfg.Razorpay.KeyID, s.cfg.Razorpay.KeySecret)
-	sub, err := client.Subscription.Create(map[string]interface{}{
-		"plan_id":         planID,
-		"total_count":     totalCount,
-		"customer_notify": 1,
-		"notes":           notes,
-	}, nil)
-	if err != nil {
-		slog.ErrorContext(r.Context(), "razorpay subscription create failed", "error", err, "user_id", user.ID, "plan", req.Plan)
-		writeError(w, http.StatusBadGateway, "payment_gateway_error", "Payment provider is unavailable — please try again in a moment.")
+	// Razorpay's Go SDK doesn't accept a context. Wrap the call in a timeout
+	// so a slow Razorpay API doesn't pin the handler open until DO's
+	// upstream 60s timeout turns into a 502. 15s is well above Razorpay's
+	// normal <1s p95 and still under any sane gateway deadline.
+	type subResult struct {
+		data map[string]interface{}
+		err  error
+	}
+	resCh := make(chan subResult, 1)
+	go func() {
+		client := razorpay.NewClient(s.cfg.Razorpay.KeyID, s.cfg.Razorpay.KeySecret)
+		data, err := client.Subscription.Create(map[string]interface{}{
+			"plan_id":         planID,
+			"total_count":     totalCount,
+			"customer_notify": 1,
+			"notes":           notes,
+		}, nil)
+		resCh <- subResult{data: data, err: err}
+	}()
+
+	var sub map[string]interface{}
+	select {
+	case res := <-resCh:
+		if res.err != nil {
+			slog.ErrorContext(r.Context(), "razorpay subscription create failed", "error", res.err, "user_id", user.ID, "plan", req.Plan)
+			writeError(w, http.StatusBadGateway, "payment_gateway_error",
+				"Payment provider returned an error — please try again in a moment. If the problem persists, email contact@instanode.dev.")
+			return
+		}
+		sub = res.data
+	case <-time.After(15 * time.Second):
+		slog.ErrorContext(r.Context(), "razorpay subscription create timeout", "user_id", user.ID, "plan", req.Plan)
+		writeError(w, http.StatusGatewayTimeout, "payment_gateway_timeout",
+			"Payment provider took too long to respond. Please retry in a few seconds.")
 		return
 	}
 
