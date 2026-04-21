@@ -166,7 +166,10 @@ func main() {
 	// Razorpay's /v1/subscriptions takes from inside the container. Gate:
 	// requires ?token=<JWT_SECRET> so only the operator can hit it.
 	mux.HandleFunc("GET /debug/razorpay-ping", func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Query().Get("token") != cfg.JWT.Secret {
+		// Gate on the Brevo inbound secret (already SECRET in DO env, known
+		// to operator) so this diagnostic endpoint can be hit from anywhere.
+		expected := cfg.Email.BrevoInboundSecret
+		if expected == "" || r.URL.Query().Get("token") != expected {
 			writeError(w, http.StatusUnauthorized, "unauthorized", "debug endpoint — token required")
 			return
 		}
