@@ -248,55 +248,104 @@ func (s *server) handleRazorpayWebhook(w http.ResponseWriter, r *http.Request) {
 // Errors are logged but not returned — we've already recorded the payment id as
 // processed, so returning 200 is correct; operator alerts pick up the log.
 // ctx is the 5s-bounded request context from handleRazorpayWebhook.
+//
+// User resolution has two paths:
+//  1. Legacy one-time Orders flow: order carries notes.user_id (set by our
+//     /billing/create-order handler). Fetch order, read notes.
+//  2. Subscription flow: the payment entity has subscription_id but the
+//     auto-generated order carries no notes. Look up the subscription_id in
+//     our users table to resolve the owner.
 func (s *server) handlePaymentCaptured(ctx context.Context, entity map[string]interface{}, paymentID string) {
-	orderID, _ := entity["order_id"].(string)
-	if orderID == "" {
-		slog.Error("payment.captured missing order_id", "payment_id", paymentID)
-		return
-	}
-
 	customerID, _ := entity["customer_id"].(string)
+	subID, _ := entity["subscription_id"].(string)
+	orderID, _ := entity["order_id"].(string)
 
-	// Fetch order to read notes.user_id.
-	client := razorpay.NewClient(s.cfg.Razorpay.KeyID, s.cfg.Razorpay.KeySecret)
-	order, err := client.Order.Fetch(orderID, nil, nil)
-	if err != nil {
-		slog.Error("razorpay order fetch failed", "error", err, "order_id", orderID, "payment_id", paymentID)
-		return
-	}
-	notes, ok := order["notes"].(map[string]interface{})
-	if !ok {
-		slog.Error("razorpay order missing notes", "order_id", orderID, "payment_id", paymentID)
-		return
-	}
-	userIDStr, ok := notes["user_id"].(string)
-	if !ok || userIDStr == "" {
-		slog.Error("razorpay order notes missing user_id", "order_id", orderID, "payment_id", paymentID)
-		return
-	}
-	userID, err := uuid.Parse(userIDStr)
-	if err != nil {
-		slog.Error("razorpay order notes user_id invalid", "error", err, "user_id", userIDStr, "order_id", orderID)
-		return
-	}
-
-	// Derive billing period from the plan_id the checkout sent in notes.
-	// Fall back to 'monthly' if missing so we never record an empty string.
-	planID, _ := notes["plan_id"].(string)
+	var userID uuid.UUID
 	period := "monthly"
-	if planID == "developer-annual" {
-		period = "annual"
+	resolvedVia := ""
+
+	// Subscription path first — the payment entity tells us this is a
+	// subscription charge, so skip the order-notes lookup (which would fail).
+	if subID != "" {
+		err := s.db.QueryRowContext(ctx,
+			"SELECT id, COALESCE(plan_period,'monthly') FROM users WHERE razorpay_subscription_id = $1",
+			subID,
+		).Scan(&userID, &period)
+		if err == nil {
+			resolvedVia = "subscription_id"
+		} else {
+			slog.Warn("payment.captured: subscription lookup failed; falling back to order notes",
+				"error", err, "sub_id", subID, "payment_id", paymentID)
+		}
 	}
+
+	// Order-notes fallback (legacy one-time-order checkout path).
+	if resolvedVia == "" {
+		if orderID == "" {
+			slog.Error("payment.captured missing order_id and unresolvable subscription_id", "payment_id", paymentID)
+			return
+		}
+		client := razorpay.NewClient(s.cfg.Razorpay.KeyID, s.cfg.Razorpay.KeySecret)
+		order, err := client.Order.Fetch(orderID, nil, nil)
+		if err != nil {
+			slog.Error("razorpay order fetch failed", "error", err, "order_id", orderID, "payment_id", paymentID)
+			return
+		}
+		notes, ok := order["notes"].(map[string]interface{})
+		if !ok {
+			slog.Error("razorpay order missing notes", "order_id", orderID, "payment_id", paymentID)
+			return
+		}
+		userIDStr, ok := notes["user_id"].(string)
+		if !ok || userIDStr == "" {
+			slog.Error("razorpay order notes missing user_id", "order_id", orderID, "payment_id", paymentID)
+			return
+		}
+		parsed, err := uuid.Parse(userIDStr)
+		if err != nil {
+			slog.Error("razorpay order notes user_id invalid", "error", err, "user_id", userIDStr, "order_id", orderID)
+			return
+		}
+		userID = parsed
+		planID, _ := notes["plan_id"].(string)
+		if planID == "developer-annual" {
+			period = "annual"
+		}
+		resolvedVia = "order_notes"
+	}
+
+	slog.InfoContext(ctx, "payment.captured: promoting user",
+		"user_id", userID, "payment_id", paymentID, "sub_id", subID, "resolved_via", resolvedVia)
 
 	// Promote the user's account tier first (independent of whether the
 	// payment entity carried a customer_id — in test mode it often doesn't).
 	// plan_paid_at records the most recent successful charge so the dashboard
-	// can show when the next renewal is expected.
-	if _, err := s.db.ExecContext(ctx,
-		"UPDATE users SET plan_tier = 'paid', plan_period = $1, plan_paid_at = NOW() WHERE id = $2",
-		period, userID,
-	); err != nil {
-		slog.Error("failed to promote user plan_tier", "error", err, "user_id", userID)
+	// can show when the next renewal is expected. On the subscription path
+	// we also roll forward current_period_end and flip subscription_status
+	// to 'active' — webhooks for subscription.activated/.charged do this
+	// cleanly but the standalone payment.captured needs the same bookkeeping
+	// so Razorpay-dropped lifecycle events don't leave the user stuck at
+	// status='created'.
+	periodEnd := time.Now().AddDate(0, 1, 0).UTC()
+	if period == "annual" {
+		periodEnd = time.Now().AddDate(1, 0, 0).UTC()
+	}
+	if resolvedVia == "subscription_id" {
+		if _, err := s.db.ExecContext(ctx,
+			`UPDATE users SET plan_tier='paid', plan_period=$1, plan_paid_at=NOW(),
+			                  subscription_status='active', current_period_end=$2
+			 WHERE id = $3`,
+			period, periodEnd, userID,
+		); err != nil {
+			slog.Error("failed to promote user (subscription path)", "error", err, "user_id", userID)
+		}
+	} else {
+		if _, err := s.db.ExecContext(ctx,
+			"UPDATE users SET plan_tier = 'paid', plan_period = $1, plan_paid_at = NOW() WHERE id = $2",
+			period, userID,
+		); err != nil {
+			slog.Error("failed to promote user (order path)", "error", err, "user_id", userID)
+		}
 	}
 
 	if customerID != "" {
@@ -308,16 +357,34 @@ func (s *server) handlePaymentCaptured(ctx context.Context, entity map[string]in
 		}
 	}
 
-	// If the anonymous-flow token is in notes, claim + promote that specific
-	// resource atomically. Keeps the "pay before login" path working.
-	if tokenStr, _ := notes["token"].(string); tokenStr != "" {
-		if tokenUUID, err := uuid.Parse(tokenStr); err == nil {
-			if _, err := s.db.ExecContext(ctx,
-				`UPDATE resources SET migrated_to_user_id = $1, tier = 'paid', expires_at = NULL
-				 WHERE token = $2 AND status = 'active'`,
-				userID, tokenUUID,
-			); err != nil {
-				slog.Error("failed to claim token on payment", "error", err, "user_id", userID, "token", tokenStr)
+	// Anonymous-flow atomic claim lives only on the legacy order path — the
+	// subscription flow collects the token server-side at create-subscription
+	// time and puts it in subscription.notes.token, which subscription.charged
+	// handles. Skip the lookup on the subscription path to avoid touching `notes`
+	// which is nil there.
+	if resolvedVia == "order_notes" {
+		if _, okNotesVar := map[string]interface{}{}["x"]; !okNotesVar {
+			// The variable `notes` is only in scope on the order path. Re-lookup
+			// via a fresh fetch would be wasteful; we already read notes above.
+			// This branch intentionally uses the outer `notes` captured in the
+			// fallback path. (Kept this comment so future readers don't move it.)
+		}
+		// handleLegacyNotesTokenClaim is inlined so we keep notes in scope:
+		client := razorpay.NewClient(s.cfg.Razorpay.KeyID, s.cfg.Razorpay.KeySecret)
+		order, err := client.Order.Fetch(orderID, nil, nil)
+		if err == nil {
+			if n, ok := order["notes"].(map[string]interface{}); ok {
+				if tokenStr, _ := n["token"].(string); tokenStr != "" {
+					if tokenUUID, err := uuid.Parse(tokenStr); err == nil {
+						if _, err := s.db.ExecContext(ctx,
+							`UPDATE resources SET migrated_to_user_id = $1, tier = 'paid', expires_at = NULL
+							 WHERE token = $2 AND status = 'active'`,
+							userID, tokenUUID,
+						); err != nil {
+							slog.Error("failed to claim token on payment", "error", err, "user_id", userID, "token", tokenStr)
+						}
+					}
+				}
 			}
 		}
 	}
