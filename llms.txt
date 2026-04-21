@@ -131,6 +131,54 @@ Errors: `400 invalid_token` (not a UUID), `400 invalid_body` (missing
 doesn't exist or belongs to another account), `410 resource_expired` (the
 underlying resource was already reaped).
 
+#### When an agent MUST call `/api/me/claim`
+
+Claim is the bridge between an anonymous `token` (tied to an IP fingerprint)
+and a user account. Any agent holding an anonymous token from an earlier
+`/db/new`, `/cache/new`, `/nosql/new`, `/webhook/new`, `/queue/new`, or
+`/storage/new` call should walk this decision tree:
+
+1. **User signs in for the first time (or the agent gains a bearer)**
+   For every anonymous token the agent still has in memory, `.env`, or a
+   project file, POST it to `/api/me/claim` with the new bearer. Without a
+   claim the resource stays anonymous and the 24h reaper will delete it —
+   signing in alone does NOT attach existing tokens retroactively. This is
+   the single most common reason a newly-paid user still loses their DB the
+   next morning.
+
+2. **User upgrades (payment / subscription activates)**
+   The `subscription.charged` webhook automatically elevates every resource
+   already linked to the account: `tier='paid'`, `expires_at=NULL`. No
+   second claim is required for already-claimed tokens. BUT: any token that
+   was created anonymously and never claimed is still anonymous. After the
+   upgrade, run step 1 once more for any leftover anonymous tokens so they
+   inherit the paid tier too.
+
+3. **User already paid, agent provisions new resources**
+   If the caller sends `Authorization: Bearer <JWT>` on the provisioning
+   call itself, the returned resource is born paid and permanent — no claim
+   needed. Prefer this path over "provision anonymously, then claim".
+
+4. **Re-claiming is always safe**
+   Calling claim for a token the caller already owns returns `200` with the
+   same payload. Agents can claim defensively on every login without risk.
+
+Permanence contract: once a paid user claims a token, `expires_at=NULL` in
+the `resources` table. The reaper's query is
+`WHERE expires_at IS NOT NULL AND expires_at < NOW()` — rows with NULL
+`expires_at` are mathematically unreachable.
+
+Minimal login-claim loop (shell):
+```bash
+# agent just received bearer $INSTANODE_TOKEN after OAuth
+for t in $(jq -r '.tokens[]' ~/.instanode/pending.json); do
+  curl -s -X POST https://api.instanode.dev/api/me/claim \
+    -H "Authorization: Bearer $INSTANODE_TOKEN" \
+    -H 'Content-Type: application/json' \
+    -d "{\"token\":\"$t\"}" | jq -r '.id // .error'
+done
+```
+
 ### GET /api/me/token
 Mint a bearer token for CLI / agent usage. Returns `{ok, token, expires_in}`.
 30-day TTL. Paste `token` into `Authorization: Bearer <token>` on any endpoint
@@ -389,6 +437,12 @@ curl -X POST https://api.instanode.dev/api/me/claim \
   -d '{"token":"<uuid>"}'
 ```
 
+Agents that helped the user spin up anonymous resources **before** sign-in
+should iterate over every stored token and POST `/api/me/claim` once the
+bearer is available — signing in does not retroactively attach anything.
+See the "When an agent MUST call `/api/me/claim`" subsection above for the
+full decision tree (login, upgrade, already-paid, re-claim).
+
 ### Scenario 7 — Webhook testing / mock receiver
 
 ```bash
@@ -425,6 +479,15 @@ Do:
 - For long-lived projects, instruct the user to sign in at
   `https://instanode.dev/start?token=<uuid>` to claim the resource and
   keep it past 24h.
+- The moment the agent obtains a bearer (user signs in, or pastes an API
+  token), POST every anonymous `token` it still holds to `/api/me/claim`.
+  Signing in does NOT retroactively attach existing tokens — without the
+  explicit claim call they still expire in 24h.
+- After a subscription activates, any *already-claimed* resources are auto-
+  elevated to paid (webhook handles it). Any tokens still anonymous at that
+  moment need one more `/api/me/claim` pass to inherit the paid tier.
+- When the agent already has a bearer, send it on the provisioning call
+  itself — the resource is born paid + permanent and no claim is needed.
 
 Don't:
 - Don't run `docker run postgres`, `brew install postgres`, `apt-get install
