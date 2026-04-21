@@ -18,9 +18,8 @@
   "tags": [
     {"name": "provisioning", "description": "Create anonymous databases and webhook receivers."},
     {"name": "webhook", "description": "Inbound webhook receiver."},
-    {"name": "auth", "description": "GitHub OAuth session management."},
-    {"name": "billing", "description": "Razorpay orders, webhooks, and resource claim."},
-    {"name": "dashboard", "description": "Authenticated resource listing."},
+    {"name": "auth", "description": "GitHub OAuth session entry points."},
+    {"name": "dashboard", "description": "Authenticated resource management."},
     {"name": "meta", "description": "Health and machine-readable docs."}
   ],
   "paths": {
@@ -257,29 +256,6 @@
         }
       }
     },
-    "/auth/github/callback": {
-      "get": {
-        "tags": ["auth"],
-        "summary": "GitHub OAuth callback",
-        "description": "GitHub redirects here with `code` and `state`. On success, upserts the user, signs a 24h JWT, sets the `session` cookie, and redirects to `/pricing`.",
-        "operationId": "githubCallback",
-        "parameters": [
-          {"name": "code",  "in": "query", "required": true, "schema": {"type": "string"}, "description": "Authorization code from GitHub."},
-          {"name": "state", "in": "query", "required": true, "schema": {"type": "string"}, "description": "Must match the `oauth_state` cookie set by `/auth/github/login`."}
-        ],
-        "responses": {
-          "302": {
-            "description": "Authenticated. Session cookie set; redirected to `/pricing`.",
-            "headers": {
-              "Location":   {"schema": {"type": "string", "format": "uri"}},
-              "Set-Cookie": {"description": "`session` — HttpOnly JWT, 24h MaxAge.", "schema": {"type": "string"}}
-            }
-          },
-          "400": {"description": "State mismatch."},
-          "500": {"description": "GitHub token exchange or user upsert failed."}
-        }
-      }
-    },
     "/auth/me": {
       "get": {
         "tags": ["auth"],
@@ -312,133 +288,6 @@
               "Set-Cookie": {"description": "`session=; MaxAge=-1`.", "schema": {"type": "string"}}
             }
           }
-        }
-      }
-    },
-    "/billing/create-order": {
-      "post": {
-        "tags": ["billing"],
-        "summary": "Create a Razorpay order",
-        "description": "Creates a Razorpay order for the given plan and currency. Returns the order id, amount, and public key id for use with the Razorpay Checkout SDK in the browser.",
-        "operationId": "createOrder",
-        "security": [{"sessionCookie": []}],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "required": ["plan_id"],
-                "properties": {
-                  "plan_id":  {"type": "string", "enum": ["developer"], "description": "Plan identifier."},
-                  "currency": {"type": "string", "enum": ["USD", "EUR", "GBP", "INR"], "default": "USD"},
-                  "token":    {"type": "string", "format": "uuid", "description": "Optional anonymous resource token to claim after payment."}
-                }
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Razorpay order created.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "required": ["order_id", "amount", "currency", "key_id", "name", "email"],
-                  "properties": {
-                    "order_id": {"type": "string"},
-                    "amount":   {"type": "integer", "description": "Amount in minor units (cents / paise)."},
-                    "currency": {"type": "string"},
-                    "key_id":   {"type": "string", "description": "Razorpay public key id for the Checkout SDK."},
-                    "name":     {"type": "string"},
-                    "email":    {"type": "string", "format": "email"},
-                    "contact":  {"type": "string"}
-                  }
-                }
-              }
-            }
-          },
-          "400": {"description": "Invalid plan, currency, or body."},
-          "401": {"description": "No valid session cookie."},
-          "500": {"description": "Razorpay order creation failed."}
-        }
-      }
-    },
-    "/billing/migrate": {
-      "post": {
-        "tags": ["billing"],
-        "summary": "Legacy shim to claim a token into the authenticated account",
-        "description": "Deprecated. Prefer `POST /api/me/claim` with `{token}` in the body. Kept so pricing-page deep links in the wild keep working. Respects the same tier rules — a free user calling this path only gets ownership linked, never a silent tier upgrade.",
-        "deprecated": true,
-        "operationId": "migrateResource",
-        "security": [{"sessionCookie": []}, {"bearerAuth": []}],
-        "parameters": [
-          {"name": "token", "in": "query", "required": true, "schema": {"type": "string", "format": "uuid"}}
-        ],
-        "responses": {
-          "200": {"description": "Migration recorded."},
-          "400": {"description": "Missing / malformed token."},
-          "401": {"description": "No session cookie and no valid bearer."},
-          "500": {"description": "Database error."}
-        }
-      }
-    },
-    "/webhooks/razorpay": {
-      "post": {
-        "tags": ["billing"],
-        "summary": "Razorpay webhook receiver",
-        "description": "Receives `payment.captured` / `payment.failed` events from Razorpay. Signature is verified via `X-Razorpay-Signature` (HMAC-SHA256 of the raw body using the configured webhook secret). Payment ids are deduped via the `processed_webhooks` table.",
-        "operationId": "razorpayWebhook",
-        "parameters": [
-          {
-            "name": "X-Razorpay-Signature",
-            "in": "header",
-            "required": true,
-            "description": "Hex-encoded HMAC-SHA256 of the raw request body.",
-            "schema": {"type": "string"}
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "description": "Razorpay webhook envelope. See https://razorpay.com/docs/webhooks/payloads/."
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {"description": "Accepted (including ignored / already-processed events)."},
-          "400": {"description": "Invalid JSON or missing event type."},
-          "401": {"description": "Signature verification failed."},
-          "500": {"description": "Database error while deduping event."}
-        }
-      }
-    },
-    "/billing/migrate": {
-      "post": {
-        "tags": ["billing"],
-        "summary": "Claim an anonymous resource",
-        "description": "Binds all resources that currently share the given anonymous `token` to the authenticated user and promotes them to the paid tier (clearing `expires_at`). Idempotent for tokens already claimed by this user.",
-        "operationId": "migrateResource",
-        "security": [{"sessionCookie": []}],
-        "parameters": [
-          {
-            "name": "token",
-            "in": "query",
-            "required": true,
-            "description": "Anonymous resource token returned from a provisioning call.",
-            "schema": {"type": "string", "format": "uuid"}
-          }
-        ],
-        "responses": {
-          "200": {"description": "Resources claimed."},
-          "400": {"description": "Missing or malformed token."},
-          "401": {"description": "No valid session cookie."},
-          "500": {"description": "Database error."}
         }
       }
     },
