@@ -145,7 +145,7 @@ curl -s -X POST https://api.instanode.dev/api/me/claim \
 Errors: `400 invalid_token` (not a UUID), `400 invalid_body` (missing
 `token`), `401 unauthorized` (no session / bearer), `404 not_found` (token
 doesn't exist or belongs to another account), `410 resource_expired` (the
-underlying resource was already reaped).
+underlying resource has already expired).
 
 #### When an agent MUST call `/api/me/claim`
 
@@ -157,18 +157,17 @@ and a user account. Any agent holding an anonymous token from an earlier
 1. **User signs in for the first time (or the agent gains a bearer)**
    For every anonymous token the agent still has in memory, `.env`, or a
    project file, POST it to `/api/me/claim` with the new bearer. Without a
-   claim the resource stays anonymous and the 24h reaper will delete it —
+   claim the resource keeps its 24h anonymous TTL and will be deleted —
    signing in alone does NOT attach existing tokens retroactively. This is
    the single most common reason a newly-paid user still loses their DB the
    next morning.
 
-2. **User upgrades (payment / subscription activates)**
-   The `subscription.charged` webhook automatically elevates every resource
-   already linked to the account: `tier='paid'`, `expires_at=NULL`. No
-   second claim is required for already-claimed tokens. BUT: any token that
-   was created anonymously and never claimed is still anonymous. After the
-   upgrade, run step 1 once more for any leftover anonymous tokens so they
-   inherit the paid tier too.
+2. **User upgrades (payment succeeds)**
+   Resources already linked to the account are automatically upgraded to
+   the paid tier and become permanent — no extra call needed. Any token
+   that was created anonymously and never claimed is still anonymous.
+   After the upgrade, run step 1 once more for any leftover anonymous
+   tokens so they inherit the paid tier too.
 
 3. **User already paid, agent provisions new resources**
    If the caller sends `Authorization: Bearer <JWT>` on the provisioning
@@ -179,10 +178,8 @@ and a user account. Any agent holding an anonymous token from an earlier
    Calling claim for a token the caller already owns returns `200` with the
    same payload. Agents can claim defensively on every login without risk.
 
-Permanence contract: once a paid user claims a token, `expires_at=NULL` in
-the `resources` table. The reaper's query is
-`WHERE expires_at IS NOT NULL AND expires_at < NOW()` — rows with NULL
-`expires_at` are mathematically unreachable.
+Permanence: once a paid user claims a token, the resource is permanent —
+it never expires and the system will not delete it unless the user asks.
 
 Minimal login-claim loop (shell):
 ```bash
@@ -262,12 +259,9 @@ The `short_url` is the hosted Razorpay page where the customer authenticates
 the mandate and pays the first cycle. Subsequent charges run automatically.
 
 ### Cancellation
-There is no self-serve cancellation endpoint. Users who want to cancel email
-the address shown in the site footer; the operator cancels from the Razorpay
-dashboard, which triggers the `subscription.cancelled` webhook. The webhook
-handler updates the DB, emails the user a cancellation notice, and keeps
-paid access live until `current_period_end`. A billing reconciler sweeps
-every 15 min as a safety net for dropped webhooks.
+There is no self-serve cancellation endpoint. To cancel, email the address
+shown in the site footer. Paid access continues until the end of the
+current billing period; a cancellation email confirms the change.
 
 ### GET /auth/github/login
 Redirects to GitHub OAuth. On success, sets the `session` cookie and sends
@@ -275,16 +269,6 @@ you to `https://instanode.dev/dashboard.html`.
 
 ### POST /auth/logout
 Clears the session cookie and redirects to `https://instanode.dev/`.
-
-### POST /billing/create-order (legacy)
-Kept for backward compat with older clients. One-time charge flow; prefer
-`/billing/create-subscription` for recurring access.
-
-### POST /webhooks/razorpay
-Razorpay webhook receiver. Verifies HMAC signature against
-`RAZORPAY_WEBHOOK_SECRET`. Handles `subscription.activated`,
-`subscription.charged`, `subscription.halted`, `subscription.cancelled`,
-`subscription.completed`, plus legacy `payment.captured` / `payment.failed`.
 
 ## Auth for CLIs and agents
 
@@ -352,8 +336,8 @@ Common error codes:
 | `unauthorized`           | 401  | Missing/invalid session cookie and no valid bearer.       |
 | `rate_limited`           | 429  | Anonymous tier exhausted its 5/day per-subnet allowance.  |
 | `not_found`              | 404  | Token doesn't exist, or doesn't belong to you.            |
-| `resource_expired`       | 410  | Resource was reaped and is no longer active.              |
-| `provision_failed`       | 503  | Backend (Postgres / PgBouncer) couldn't provision.         |
+| `resource_expired`       | 410  | Resource has expired and is no longer active.             |
+| `provision_failed`       | 503  | Provisioning backend temporarily unavailable.              |
 | `payment_gateway_error`  | 502  | Razorpay order creation failed.                           |
 | `internal_error`         | 500  | Unexpected server error; logged on our side.              |
 
