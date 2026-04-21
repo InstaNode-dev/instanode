@@ -99,16 +99,37 @@ OpenAPI 3.1 spec for the whole surface. Schemas, security schemes, error
 shapes — all machine-readable.
 
 ### POST /api/me/claim
-Attach an existing token to your account. Auth: session cookie OR
-`Authorization: Bearer <JWT>`. Body: `{"token":"<uuid>"}`.
+Attach an existing anonymous token to your account so the resource survives
+past the 24h TTL. This is the one-call alternative to opening the browser
+URL printed in the `note` field of a `/db/new` response.
 
-Paid users get `tier='paid'` and `expires_at=NULL` automatically. Free users
-keep their anonymous tier but the resource is now linked to their account and
-visible on the dashboard. Idempotent — re-claiming a token you already own
-returns 200 with the same payload.
+- Auth: session cookie OR `Authorization: Bearer <JWT>` (required).
+- Body: `{"token":"<uuid>"}` — the `token` field from the provision response.
+- Returns: `{ok, id, token, resource_type, name, tier, status}`.
 
-Errors: `400 invalid_token`, `401 unauthorized`, `404 not_found`,
-`410 resource_expired`.
+Behaviour:
+- **Paid users**: resource is moved into the account, `tier` flips to `paid`,
+  `expires_at` is cleared. The resource becomes permanent.
+- **Free (signed-in but unpaid) users**: resource is linked to the account
+  and appears on the dashboard, but keeps its anonymous 24h TTL until the
+  user upgrades. A later upgrade elevates already-claimed resources
+  automatically (or call `/api/me/claim` again post-upgrade).
+- **Idempotent**: re-claiming a token the caller already owns returns 200
+  with the same payload. Claiming a token owned by someone else returns 404
+  (existence is not leaked).
+
+Example:
+```
+curl -s -X POST https://api.instanode.dev/api/me/claim \
+  -H "Authorization: Bearer $INSTANODE_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"token":"a1b2c3d4-..."}'
+```
+
+Errors: `400 invalid_token` (not a UUID), `400 invalid_body` (missing
+`token`), `401 unauthorized` (no session / bearer), `404 not_found` (token
+doesn't exist or belongs to another account), `410 resource_expired` (the
+underlying resource was already reaped).
 
 ### GET /api/me/token
 Mint a bearer token for CLI / agent usage. Returns `{ok, token, expires_in}`.
@@ -176,9 +197,13 @@ Creates a Razorpay Subscription against the pre-provisioned plan and returns
 The `short_url` is the hosted Razorpay page where the customer authenticates
 the mandate and pays the first cycle. Subsequent charges run automatically.
 
-### POST /billing/cancel-subscription
-Authenticated. Cancels the caller's subscription at the end of the current
-billing period — paid access continues until `current_period_end`.
+### Cancellation
+There is no self-serve cancellation endpoint. Users who want to cancel email
+the address shown in the site footer; the operator cancels from the Razorpay
+dashboard, which triggers the `subscription.cancelled` webhook. The webhook
+handler updates the DB, emails the user a cancellation notice, and keeps
+paid access live until `current_period_end`. A billing reconciler sweeps
+every 15 min as a safety net for dropped webhooks.
 
 ### GET /auth/github/login
 Redirects to GitHub OAuth. On success, sets the `session` cookie and sends
