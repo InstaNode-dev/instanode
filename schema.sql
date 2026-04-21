@@ -26,6 +26,16 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS razorpay_subscription_id TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS subscription_status TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS current_period_end TIMESTAMPTZ;
 
+-- Email idempotency markers. The webhook handlers, the one-time-order handler,
+-- and the billing reconciler all race to send confirmation / cancellation
+-- emails after a state change. An atomic UPDATE ... WHERE receipt_email_sent_at
+-- IS NULL OR receipt_email_sent_at < plan_paid_at acts as the claim lock: only
+-- the caller whose UPDATE affects a row is allowed to send. Without these we
+-- saw duplicate receipts when Razorpay retried webhooks + the reconciler tick
+-- ran simultaneously.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS receipt_email_sent_at TIMESTAMPTZ;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS cancel_email_sent_at  TIMESTAMPTZ;
+
 CREATE TABLE IF NOT EXISTS resources (
     id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     token           UUID NOT NULL UNIQUE DEFAULT uuid_generate_v4(),

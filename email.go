@@ -109,6 +109,24 @@ func paymentFailedEmail(reason string) (subject, html string) {
 	return
 }
 
+func subscriptionCancelledEmail(plan string, periodEnd time.Time) (subject, html string) {
+	subject = "Your instanode subscription has been cancelled"
+	untilLine := ""
+	if !periodEnd.IsZero() {
+		untilLine = fmt.Sprintf("<p>Paid access continues until <strong>%s</strong>. After that, your account reverts to the free tier.</p>", periodEnd.Format("2006-01-02"))
+	} else {
+		untilLine = "<p>Your account will revert to the free tier at the end of the current billing period.</p>"
+	}
+	html = fmt.Sprintf(`<!doctype html>
+<html><body style="font-family:system-ui,sans-serif;max-width:560px;margin:0 auto;padding:24px;color:#222;">
+<p>We've cancelled your <strong>%s</strong> subscription — no further charges will be made.</p>
+%s
+<p>Resources provisioned while you were on the paid plan stay reachable, but they'll start to expire on the free-tier TTL once your access downgrades. Re-subscribe any time from the <a href="https://instanode.dev/pricing.html">pricing page</a> to keep them permanent.</p>
+<p style="color:#888;font-size:11px;margin-top:32px;">For any issues or queries, contact <a href="mailto:contact@instanode.dev" style="color:#888;">contact@instanode.dev</a>.</p>
+</body></html>`, plan, untilLine)
+	return
+}
+
 func receiptEmail(plan string, amountCents int, currency string, periodEnd time.Time) (subject, html string) {
 	amount := fmt.Sprintf("%.2f %s", float64(amountCents)/100.0, currency)
 	subject = "Payment received — instanode Developer plan"

@@ -317,20 +317,12 @@ func buildHumanPlanLabel(user *User) string {
 	if user.SubscriptionStatus != nil {
 		subStatus = *user.SubscriptionStatus
 	}
-	renewalPart := ""
-	if user.CurrentPeriodEnd != nil && !user.CurrentPeriodEnd.IsZero() {
-		if subStatus == "cancelled" {
-			renewalPart = " · ends " + user.CurrentPeriodEnd.Format("2006-01-02")
-		} else {
-			renewalPart = " · renews " + user.CurrentPeriodEnd.Format("2006-01-02")
-		}
-	}
-	label := "Developer · " + periodLabel + renewalPart
+	label := "Developer · " + periodLabel + " · active"
 	switch subStatus {
 	case "cancelled":
-		label += " (cancellation scheduled)"
+		label = "Developer · " + periodLabel + " · cancellation scheduled"
 	case "halted":
-		label += " (payment halted — please update your card)"
+		label = "Developer · " + periodLabel + " · payment halted — update your card"
 	}
 	return label
 }

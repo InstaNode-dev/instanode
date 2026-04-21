@@ -407,23 +407,14 @@ func (s *server) handlePaymentCaptured(ctx context.Context, entity map[string]in
 	)
 
 	// Receipt email. Non-fatal — payment has already been committed to DB;
-	// a missing email is strictly a UX regression.
-	var userEmail string
-	if err := s.db.QueryRowContext(ctx, "SELECT email FROM users WHERE id = $1", userID).Scan(&userEmail); err == nil && userEmail != "" {
-		amountCents := 0
-		if v, ok := entity["amount"].(float64); ok {
-			amountCents = int(v)
-		}
-		currency, _ := entity["currency"].(string)
-		planLabel := "Developer · Monthly"
-		nextRenewal := time.Now().AddDate(0, 1, 0)
-		if period == "annual" {
-			planLabel = "Developer · Annual"
-			nextRenewal = time.Now().AddDate(1, 0, 0)
-		}
-		subject, html := receiptEmail(planLabel, amountCents, currency, nextRenewal)
-		s.email.SendAsync(userEmail, subject, html)
+	// a missing email is strictly a UX regression. The claim helper ensures
+	// we don't double-send when the reconciler also picks up this charge.
+	amountCents := 0
+	if v, ok := entity["amount"].(float64); ok {
+		amountCents = int(v)
 	}
+	currency, _ := entity["currency"].(string)
+	sendReceiptIfUnsent(ctx, s.db, s.email, userID, amountCents, currency)
 }
 
 func (s *server) computeSignature(payload, secret string) string {
@@ -570,8 +561,16 @@ func (s *server) handleCreateSubscription(w http.ResponseWriter, r *http.Request
 
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
+	// Clear cancel_email_sent_at when a new subscription attaches so a later
+	// cancel on this fresh sub still triggers a cancellation email (the claim
+	// lock is per-sub-lifecycle, not lifetime).
 	if _, err := s.db.ExecContext(ctx,
-		"UPDATE users SET razorpay_subscription_id = $1, subscription_status = 'created', plan_period = $2 WHERE id = $3",
+		`UPDATE users
+		    SET razorpay_subscription_id = $1,
+		        subscription_status = 'created',
+		        plan_period = $2,
+		        cancel_email_sent_at = NULL
+		  WHERE id = $3`,
 		subID, req.Plan, user.ID,
 	); err != nil {
 		slog.ErrorContext(r.Context(), "persist subscription_id failed", "error", err, "user_id", user.ID, "sub_id", subID)
@@ -583,40 +582,6 @@ func (s *server) handleCreateSubscription(w http.ResponseWriter, r *http.Request
 		KeyID:          s.cfg.Razorpay.KeyID,
 		PlanLabel:      planLabel,
 	})
-}
-
-// handleCancelSubscription cancels at cycle end — user keeps paid access until
-// current_period_end, then downgrades naturally.
-func (s *server) handleCancelSubscription(w http.ResponseWriter, r *http.Request) {
-	user := s.authUser(r)
-	if user == nil {
-		writeError(w, http.StatusUnauthorized, "unauthorized", "Sign in required.")
-		return
-	}
-
-	var subID string
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
-	defer cancel()
-	if err := s.db.QueryRowContext(ctx, "SELECT razorpay_subscription_id FROM users WHERE id = $1", user.ID).Scan(&subID); err != nil || subID == "" {
-		writeError(w, http.StatusNotFound, "no_subscription", "No active subscription on this account.")
-		return
-	}
-
-	client := razorpay.NewClient(s.cfg.Razorpay.KeyID, s.cfg.Razorpay.KeySecret)
-	if _, err := client.Subscription.Cancel(subID, map[string]interface{}{"cancel_at_cycle_end": 1}, nil); err != nil {
-		slog.ErrorContext(r.Context(), "razorpay subscription cancel failed", "error", err, "sub_id", subID)
-		writeError(w, http.StatusBadGateway, "payment_gateway_error", "Could not cancel subscription right now — please retry.")
-		return
-	}
-
-	if _, err := s.db.ExecContext(ctx,
-		"UPDATE users SET subscription_status = 'cancelled' WHERE id = $1",
-		user.ID,
-	); err != nil {
-		slog.ErrorContext(r.Context(), "persist cancellation failed", "error", err, "user_id", user.ID)
-	}
-
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "message": "Subscription will end at the close of the current period."})
 }
 
 // handleSubscriptionCharged runs on both subscription.activated (first charge)
@@ -666,21 +631,14 @@ func (s *server) handleSubscriptionCharged(ctx context.Context, subEntity, payme
 		userID,
 	)
 
-	// Receipt email.
-	var email string
-	if err := s.db.QueryRowContext(ctx, "SELECT email FROM users WHERE id = $1", userID).Scan(&email); err == nil && email != "" {
-		amountCents := 0
-		if v, ok := paymentEntity["amount"].(float64); ok {
-			amountCents = int(v)
-		}
-		currency, _ := paymentEntity["currency"].(string)
-		planLabel := "Developer · Monthly"
-		if period == "annual" {
-			planLabel = "Developer · Annual"
-		}
-		subject, html := receiptEmail(planLabel, amountCents, currency, periodEnd)
-		s.email.SendAsync(email, subject, html)
+	// Receipt email — claim-locked so a retried webhook or a simultaneous
+	// reconciler tick can't double-send.
+	amountCents := 0
+	if v, ok := paymentEntity["amount"].(float64); ok {
+		amountCents = int(v)
 	}
+	currency, _ := paymentEntity["currency"].(string)
+	sendReceiptIfUnsent(ctx, s.db, s.email, userID, amountCents, currency)
 
 	slog.Info("subscription charged", "user_id", userID, "sub_id", subID, "period_end", periodEnd.Format(time.RFC3339))
 }
@@ -708,18 +666,49 @@ func (s *server) handleSubscriptionHalted(ctx context.Context, subEntity map[str
 	slog.Warn("subscription halted", "user_id", userID, "sub_id", subID)
 }
 
+// handleSubscriptionCancelled fires when a subscription is cancelled — whether
+// via our API, the Razorpay dashboard, or Razorpay's own lifecycle. User
+// resolution falls back to sub_id lookup because dashboard-initiated cancels
+// sometimes arrive without our notes attached. Sending the cancellation email
+// is claim-locked so a reconciler sweep for the same sub can't double-send.
 func (s *server) handleSubscriptionCancelled(ctx context.Context, subEntity map[string]interface{}) {
 	subID, _ := subEntity["id"].(string)
 	notes, _ := subEntity["notes"].(map[string]interface{})
-	userID, ok := userIDFromNotes(notes)
-	if !ok {
+
+	var userID uuid.UUID
+	if id, ok := userIDFromNotes(notes); ok {
+		userID = id
+	} else if subID != "" {
+		if err := s.db.QueryRowContext(ctx,
+			"SELECT id FROM users WHERE razorpay_subscription_id = $1", subID,
+		).Scan(&userID); err != nil {
+			slog.Warn("subscription.cancelled: cannot resolve user", "sub_id", subID, "error", err)
+			return
+		}
+	} else {
 		return
 	}
-	// User keeps paid tier until current_period_end; status becomes 'cancelled'.
-	s.db.ExecContext(ctx,
-		"UPDATE users SET subscription_status = 'cancelled' WHERE id = $1",
-		userID,
-	)
+
+	periodEnd := unixToTime(subEntity["current_end"])
+	if periodEnd.IsZero() {
+		if _, err := s.db.ExecContext(ctx,
+			"UPDATE users SET subscription_status = 'cancelled' WHERE id = $1",
+			userID,
+		); err != nil {
+			slog.Error("subscription.cancelled: persist failed", "error", err, "user_id", userID)
+			return
+		}
+	} else {
+		if _, err := s.db.ExecContext(ctx,
+			"UPDATE users SET subscription_status = 'cancelled', current_period_end = $1 WHERE id = $2",
+			periodEnd, userID,
+		); err != nil {
+			slog.Error("subscription.cancelled: persist failed", "error", err, "user_id", userID)
+			return
+		}
+	}
+
+	sendCancelIfUnsent(ctx, s.db, s.email, userID)
 	slog.Info("subscription cancelled", "user_id", userID, "sub_id", subID)
 }
 

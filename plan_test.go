@@ -96,22 +96,26 @@ func TestBuildHumanPlanLabel_Free(t *testing.T) {
 	}
 }
 
-func TestBuildHumanPlanLabel_PaidMonthlyWithRenewal(t *testing.T) {
+func TestBuildHumanPlanLabel_PaidMonthly(t *testing.T) {
 	t0, _ := time.Parse(time.RFC3339, "2026-05-20T00:00:00Z")
 	u := &User{PlanTier: "paid", PlanPeriod: "monthly", CurrentPeriodEnd: &t0}
 	got := buildHumanPlanLabel(u)
-	wantBits := []string{"Developer", "Monthly", "$12/mo", "renews 2026-05-20"}
+	wantBits := []string{"Developer", "Monthly", "$12/mo", "active"}
 	for _, s := range wantBits {
 		if !strings.Contains(got, s) {
 			t.Errorf("label %q missing %q", got, s)
 		}
+	}
+	// Renewal date must NOT leak in the label.
+	if strings.Contains(got, "2026-05-20") || strings.Contains(got, "renews") {
+		t.Errorf("label must not expose renewal date, got %q", got)
 	}
 }
 
 func TestBuildHumanPlanLabel_PaidAnnual(t *testing.T) {
 	u := &User{PlanTier: "paid", PlanPeriod: "annual"}
 	got := buildHumanPlanLabel(u)
-	if !strings.Contains(got, "Annual") || !strings.Contains(got, "$120/yr") {
+	if !strings.Contains(got, "Annual") || !strings.Contains(got, "$120/yr") || !strings.Contains(got, "active") {
 		t.Errorf("annual label missing expected: %q", got)
 	}
 }
@@ -121,14 +125,11 @@ func TestBuildHumanPlanLabel_Cancelled(t *testing.T) {
 	t0, _ := time.Parse(time.RFC3339, "2026-06-01T00:00:00Z")
 	u := &User{PlanTier: "paid", PlanPeriod: "monthly", SubscriptionStatus: &s, CurrentPeriodEnd: &t0}
 	got := buildHumanPlanLabel(u)
-	if !strings.Contains(got, "ends 2026-06-01") {
-		t.Errorf("cancelled label should say 'ends', got %q", got)
-	}
 	if !strings.Contains(got, "cancellation scheduled") {
 		t.Errorf("cancelled label should tag scheduling, got %q", got)
 	}
-	if strings.Contains(got, "renews") {
-		t.Errorf("cancelled label must not say 'renews', got %q", got)
+	if strings.Contains(got, "2026-06-01") || strings.Contains(got, "ends ") || strings.Contains(got, "renews") {
+		t.Errorf("cancelled label must not expose dates, got %q", got)
 	}
 }
 

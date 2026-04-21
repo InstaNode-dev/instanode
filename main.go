@@ -114,6 +114,12 @@ func main() {
 	// way we learn about those).
 	startInboundReconciler(db, cfg)
 
+	// Start the Razorpay billing reconciler. Polls each user's subscription
+	// state and closes gaps left by missed webhooks — e.g. a
+	// subscription.activated event that never reaches us still gets the user
+	// promoted within the next tick.
+	startBillingReconciler(db, cfg, s.email)
+
 	mux := http.NewServeMux()
 
 	// Provisioning endpoints
@@ -131,9 +137,15 @@ func main() {
 	// Billing endpoints
 	mux.HandleFunc("POST /billing/create-order", s.handleCreateOrder)               // legacy one-time charge — kept for backward compat
 	mux.HandleFunc("POST /billing/create-subscription", s.handleCreateSubscription) // recurring (preferred)
-	mux.HandleFunc("POST /billing/cancel-subscription", s.handleCancelSubscription)
 	mux.HandleFunc("POST /webhooks/razorpay", s.handleRazorpayWebhook)
 	mux.HandleFunc("POST /billing/migrate", s.handleMigrateResource)
+
+	// Cancellation is intentionally handled entirely outside the API: the
+	// operator cancels from the Razorpay dashboard → subscription.cancelled
+	// webhook fires → handleSubscriptionCancelled updates the DB and emails
+	// the user via the claim-locked helper. The billing reconciler
+	// double-checks every ~15 min so a dropped webhook can't leave state
+	// stale or the email unsent.
 
 	// Inbound email (Brevo Inbound Parsing) + admin inbox view.
 	// Token lives in the URL path so Brevo can't silently drop it the way a
