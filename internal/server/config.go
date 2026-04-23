@@ -196,7 +196,11 @@ func DefaultConfig() *Config {
 			ReadTimeout:  "10s",
 			WriteTimeout: "30s",
 			IdleTimeout:  "60s",
-			MarketingURL: "http://localhost:5173",
+			// Intentionally empty — an unset MarketingURL makes marketing
+			// redirects 404 cleanly. The old localhost default leaked into
+			// production OAuth redirects when operators forgot to set the
+			// env var, sending real users to http://localhost:5173.
+			MarketingURL: "",
 			CookieDomain: "",
 			AllowedOrigins: []string{
 				"http://localhost:5173",

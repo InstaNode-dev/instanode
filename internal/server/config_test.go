@@ -48,6 +48,9 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.Email.FromAddress != "no-reply@example.com" {
 		t.Errorf("Email.FromAddress = %q, want %q", cfg.Email.FromAddress, "no-reply@example.com")
 	}
+	if cfg.Server.MarketingURL != "" {
+		t.Errorf("Server.MarketingURL default = %q, want empty string (no localhost leak in prod)", cfg.Server.MarketingURL)
+	}
 }
 
 // TestOverrideWithEnv_FillsEmptySecrets verifies env vars populate Config fields
