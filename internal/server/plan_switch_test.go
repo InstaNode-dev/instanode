@@ -17,7 +17,7 @@ import (
 // Pure decision helpers: decidePlanSwitchRequest
 // ─────────────────────────────────────────────────────────────────────────────
 
-func strPtr(s string) *string     { return &s }
+func strPtr(s string) *string        { return &s }
 func timePtr(t time.Time) *time.Time { return &t }
 
 func TestDecidePlanSwitchRequest_FeatureOff(t *testing.T) {

@@ -44,7 +44,7 @@ const maxInboundBodyBytes = 10 * 1024 * 1024
 // item. All fields are already trimmed/normalised; headers marshal directly
 // into the JSONB column.
 type inboundMessage struct {
-	ProviderID string          // Brevo MessageId (or fallback)
+	ProviderID string // Brevo MessageId (or fallback)
 	FromEmail  string
 	FromName   string
 	ToEmail    string
@@ -105,10 +105,10 @@ func parseBrevoPayload(body []byte) ([]inboundMessage, error) {
 
 func flattenItem(it brevoItem) inboundMessage {
 	msg := inboundMessage{
-		FromEmail: strings.TrimSpace(it.From.Address),
-		FromName:  strings.TrimSpace(it.From.Name),
-		Subject:   it.Subject,
-		SpamScore: it.SpamScore,
+		FromEmail:  strings.TrimSpace(it.From.Address),
+		FromName:   strings.TrimSpace(it.From.Name),
+		Subject:    it.Subject,
+		SpamScore:  it.SpamScore,
 		RawHeaders: it.Headers,
 	}
 

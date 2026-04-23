@@ -136,9 +136,9 @@ func TestUserIDFromNotes_Malformed(t *testing.T) {
 		{"user_id": "not-a-uuid"},
 		{"user_id": "12345"},
 		{"user_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"},
-		{"user_id": 12345},       // wrong type — int, not string
-		{"user_id": nil},         // wrong type — nil
-		{"user_id": []string{}},  // wrong type — slice
+		{"user_id": 12345},      // wrong type — int, not string
+		{"user_id": nil},        // wrong type — nil
+		{"user_id": []string{}}, // wrong type — slice
 	}
 	for i, notes := range cases {
 		got, ok := userIDFromNotes(notes)
@@ -190,11 +190,11 @@ func TestUnixToTime_Nil(t *testing.T) {
 
 func TestUnixToTime_UnsupportedTypes(t *testing.T) {
 	cases := []interface{}{
-		"1713446400",        // string — not accepted
-		int(1713446400),     // plain int — not accepted (only int64)
-		int32(1713446400),   // int32 — not accepted
-		map[string]int{},    // bogus type
-		[]byte("whatever"),  // bogus type
+		"1713446400",       // string — not accepted
+		int(1713446400),    // plain int — not accepted (only int64)
+		int32(1713446400),  // int32 — not accepted
+		map[string]int{},   // bogus type
+		[]byte("whatever"), // bogus type
 	}
 	for i, v := range cases {
 		got := unixToTime(v)

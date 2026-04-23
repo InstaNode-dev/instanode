@@ -275,7 +275,7 @@ func TestLiveRazorpayCreateSub_INRMonthlyPicksINRPlanAndNotes(t *testing.T) {
 	cfg := RazorpayConfig{
 		KeyID:            "rzp_test_abc",
 		KeySecret:        "rzp_secret_xyz",
-		PlanIDMonthly:    "plan_legacy_M",   // legacy USD fallback
+		PlanIDMonthly:    "plan_legacy_M", // legacy USD fallback
 		PlanIDINRMonthly: "plan_inr_monthly_stub",
 	}
 	_, err := liveRazorpayCreateSub(context.Background(), cfg, "monthly", "INR", uuid.New())
@@ -438,4 +438,3 @@ func TestRazorpayBaseURLOverride_EmptyMeansProductionDefault(t *testing.T) {
 		t.Errorf("prod BaseURL = %q, want https://api.razorpay.com", client.Request.BaseURL)
 	}
 }
-

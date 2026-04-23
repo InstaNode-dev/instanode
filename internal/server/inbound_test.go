@@ -215,7 +215,7 @@ func TestBrevoInbound_TokenConstantTime(t *testing.T) {
 		s.handleBrevoInbound(rec, req)
 		return time.Since(start)
 	}
-	d1 := call("a")                              // short mismatch
+	d1 := call("a")                               // short mismatch
 	d2 := call("completely-different-long-wrong") // long mismatch
 	// Both should complete in < 100ms — we're really just asserting the code
 	// path ran and didn't short-circuit with a length-dependent string compare

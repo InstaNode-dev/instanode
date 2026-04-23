@@ -27,13 +27,13 @@ var llmsTxt []byte
 var schemaSQL string
 
 type server struct {
-	db           *sql.DB
-	rdb          *redis.Client // Valkey (rate limits, webhook storage, and where
-	                           // per-tenant ACL users are provisioned)
+	db  *sql.DB
+	rdb *redis.Client // Valkey (rate limits, webhook storage, and where
+	// per-tenant ACL users are provisioned)
 	cfg          *Config
-	baseURL      string  // API host, e.g. https://api.example.com — served by this binary
-	marketingURL string  // public website host, e.g. https://example.com — served elsewhere
-	custDBURL    string  // customer Postgres (where we CREATE DATABASE)
+	baseURL      string // API host, e.g. https://api.example.com — served by this binary
+	marketingURL string // public website host, e.g. https://example.com — served elsewhere
+	custDBURL    string // customer Postgres (where we CREATE DATABASE)
 	email        *emailer
 	payment      Payment // billing provider (Razorpay in prod, no-op when unconfigured)
 }
@@ -335,7 +335,7 @@ func panicRecoveryMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if err := recover(); err != nil {
-				// We use ErrorContext specifically so otelslog can automatically grab the 
+				// We use ErrorContext specifically so otelslog can automatically grab the
 				// Trace ID / Span ID strictly injected by the otelhttp middleware.
 				slog.ErrorContext(r.Context(), "FATAL PANIC", "error", err, "stack", string(debug.Stack()))
 				writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "internal_server_error", "message": "An unexpected error occurred."})

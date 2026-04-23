@@ -124,7 +124,7 @@ func initObservability(cfg *Config) func(context.Context) {
 			log.WithResource(res),
 		)
 		global.SetLoggerProvider(lp)
-		
+
 		// Map standard slog events to the OTel logger bridge
 		otelSlogHandler := otelslog.NewHandler(cfg.Observability.ServiceName)
 		slog.SetDefault(slog.New(otelSlogHandler))

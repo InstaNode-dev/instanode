@@ -140,13 +140,13 @@ func TestPlanConfig_UnknownCurrencyCoercesToUSD(t *testing.T) {
 
 func TestNormalizeCurrency(t *testing.T) {
 	tests := map[string]string{
-		"":        "USD",
-		"USD":     "USD",
-		"usd":     "USD",
-		" INR ":   "INR",
-		"inr":     "INR",
-		"EUR":     "USD", // unknown → USD by design
-		"gbp":     "USD",
+		"":         "USD",
+		"USD":      "USD",
+		"usd":      "USD",
+		" INR ":    "INR",
+		"inr":      "INR",
+		"EUR":      "USD", // unknown → USD by design
+		"gbp":      "USD",
 		"nonsense": "USD",
 	}
 	for in, want := range tests {
@@ -249,8 +249,8 @@ func TestSubscriptionStatusBlocksNew(t *testing.T) {
 		{s("halted"), false},
 		{s("completed"), false},
 		{s("expired"), false},
-		{s("created"), false},  // short_url reserved, not yet authenticated — safe to replace
-		{s("pending"), false},  // retry in flight, safe to replace
+		{s("created"), false}, // short_url reserved, not yet authenticated — safe to replace
+		{s("pending"), false}, // retry in flight, safe to replace
 		{s("active"), true},
 		{s("authenticated"), true},
 		{s("  ACTIVE  "), true}, // whitespace + case insensitive

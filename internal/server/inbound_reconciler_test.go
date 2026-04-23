@@ -11,9 +11,9 @@ func TestParsedReconcileInterval(t *testing.T) {
 		in   string
 		want time.Duration
 	}{
-		{"", 10 * time.Minute},            // default
+		{"", 10 * time.Minute},               // default
 		{"not-a-duration", 10 * time.Minute}, // invalid → default
-		{"30s", 10 * time.Minute},          // below 1m floor → default
+		{"30s", 10 * time.Minute},            // below 1m floor → default
 		{"5m", 5 * time.Minute},
 		{"1h", 1 * time.Hour},
 	}

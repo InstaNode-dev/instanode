@@ -13,14 +13,14 @@ import (
 )
 
 type Resource struct {
-	ID         uuid.UUID `json:"id"`
-	Token      uuid.UUID `json:"token"`
-	Type       string    `json:"type"`
-	Name       string    `json:"name"`
-	Tier       string    `json:"tier"`
-	Status     string    `json:"status"`
-	CreatedAt  time.Time `json:"created_at"`
-	ExpiresAt  *time.Time `json:"expires_at"`
+	ID        uuid.UUID  `json:"id"`
+	Token     uuid.UUID  `json:"token"`
+	Type      string     `json:"type"`
+	Name      string     `json:"name"`
+	Tier      string     `json:"tier"`
+	Status    string     `json:"status"`
+	CreatedAt time.Time  `json:"created_at"`
+	ExpiresAt *time.Time `json:"expires_at"`
 }
 
 func (s *server) handleGetResources(w http.ResponseWriter, r *http.Request) {
@@ -378,6 +378,7 @@ func (s *server) handleClaimToken(w http.ResponseWriter, r *http.Request) {
 		"status":        "active",
 	})
 }
+
 // ── Pure helpers (testable without DB / HTTP) ───────────────────────────────
 
 // buildHumanPlanLabel renders the one-line plan label surfaced on the

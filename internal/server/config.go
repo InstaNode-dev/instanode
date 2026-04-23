@@ -74,7 +74,7 @@ type ObservabilityConfig struct {
 	Enabled      bool              `yaml:"enabled"`
 	ServiceName  string            `yaml:"service_name"`
 	Environment  string            `yaml:"environment"`
-	Exporter     string            `yaml:"exporter"`      // "otlp" or "stdout"
+	Exporter     string            `yaml:"exporter"` // "otlp" or "stdout"
 	OTLPEndpoint string            `yaml:"otlp_endpoint"`
 	OTLPHeaders  map[string]string `yaml:"otlp_headers"`
 	OTLPInsecure bool              `yaml:"otlp_insecure"` // true for local collectors
@@ -346,7 +346,7 @@ func (c *Config) overrideWithEnv() {
 			c.JWT.Secret = v
 		}
 	}
-		if c.Database.PlatformURL == "" {
+	if c.Database.PlatformURL == "" {
 		if v := os.Getenv("DATABASE_URL"); v != "" {
 			c.Database.PlatformURL = v
 		}

@@ -37,27 +37,27 @@ const (
 )
 
 type brevoRazorpaySubDetail struct {
-	ID           string  `json:"id"`
-	Status       string  `json:"status"`
-	PaidCount    int     `json:"paid_count"`
-	CurrentEnd   float64 `json:"current_end"` // unix seconds
-	ChargeAt     float64 `json:"charge_at"`
-	EndedAt      float64 `json:"ended_at"`
-	ShortURL     string  `json:"short_url"`
-	PlanID       string  `json:"plan_id"`
-	Notes        map[string]interface{} `json:"notes"`
+	ID         string                 `json:"id"`
+	Status     string                 `json:"status"`
+	PaidCount  int                    `json:"paid_count"`
+	CurrentEnd float64                `json:"current_end"` // unix seconds
+	ChargeAt   float64                `json:"charge_at"`
+	EndedAt    float64                `json:"ended_at"`
+	ShortURL   string                 `json:"short_url"`
+	PlanID     string                 `json:"plan_id"`
+	Notes      map[string]interface{} `json:"notes"`
 }
 
 // reconcileAction is what the reconciler decides to do per user.
 type reconcileAction string
 
 const (
-	actionNone      reconcileAction = ""          // already in sync
-	actionActivate  reconcileAction = "activate"  // promote to paid + send receipt
-	actionHalt      reconcileAction = "halt"      // downgrade + send failure email
-	actionCancel    reconcileAction = "cancel"    // mark cancelled (keep paid until period end)
-	actionComplete  reconcileAction = "complete"  // total_count reached
-	actionClear     reconcileAction = "clear"     // stuck created → forget; user can retry
+	actionNone     reconcileAction = ""         // already in sync
+	actionActivate reconcileAction = "activate" // promote to paid + send receipt
+	actionHalt     reconcileAction = "halt"     // downgrade + send failure email
+	actionCancel   reconcileAction = "cancel"   // mark cancelled (keep paid until period end)
+	actionComplete reconcileAction = "complete" // total_count reached
+	actionClear    reconcileAction = "clear"    // stuck created → forget; user can retry
 )
 
 // decideBillingReconcile compares the user's DB state against the subscription
@@ -166,13 +166,13 @@ func reconcileBillingOnce(ctx context.Context, db *sql.DB, cfg *Config, em *emai
 	defer rows.Close()
 
 	type row struct {
-		userID    uuid.UUID
-		email     string
-		tier      string
-		period    string
-		paidAt    *time.Time
-		status    *string
-		subID     string
+		userID uuid.UUID
+		email  string
+		tier   string
+		period string
+		paidAt *time.Time
+		status *string
+		subID  string
 	}
 	var users []row
 	for rows.Next() {

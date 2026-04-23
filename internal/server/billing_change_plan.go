@@ -64,12 +64,12 @@ import (
 type planSwitchDecision int
 
 const (
-	planSwitchOK planSwitchDecision = iota
-	planSwitchFeatureOff                    // 404
-	planSwitchInvalidTarget                 // 400
-	planSwitchNotActive                     // 409 (no active subscription)
-	planSwitchAlreadyOnPlan                 // 409 (target == current)
-	planSwitchAlreadyPending                // 409 (another switch in flight)
+	planSwitchOK             planSwitchDecision = iota
+	planSwitchFeatureOff                        // 404
+	planSwitchInvalidTarget                     // 400
+	planSwitchNotActive                         // 409 (no active subscription)
+	planSwitchAlreadyOnPlan                     // 409 (target == current)
+	planSwitchAlreadyPending                    // 409 (another switch in flight)
 )
 
 // decidePlanSwitchRequest is the pure core of POST /billing/change-plan.
@@ -110,10 +110,10 @@ func decidePlanSwitchRequest(
 type cancelPlanSwitchDecision int
 
 const (
-	cancelSwitchOK            cancelPlanSwitchDecision = iota
-	cancelSwitchFeatureOff                             // 404
-	cancelSwitchNothingPending                         // 409 (no pending_plan_change)
-	cancelSwitchAlreadyFired                           // 409 (reconciler already created new sub — too late)
+	cancelSwitchOK             cancelPlanSwitchDecision = iota
+	cancelSwitchFeatureOff                              // 404
+	cancelSwitchNothingPending                          // 409 (no pending_plan_change)
+	cancelSwitchAlreadyFired                            // 409 (reconciler already created new sub — too late)
 )
 
 func decideCancelPlanSwitch(

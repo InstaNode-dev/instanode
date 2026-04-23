@@ -174,7 +174,8 @@ type planSwitchScheduledClaim struct {
 // (after the first has been cancelled + re-initiated) still fires the email.
 //
 // Slot-not-claimed = (plan_switch_scheduled_email_sent_at IS NULL
-//                     AND pending_plan_change IS NOT NULL).
+//
+//	AND pending_plan_change IS NOT NULL).
 func claimPlanSwitchScheduledEmail(ctx context.Context, db *sql.DB, userID uuid.UUID) (planSwitchScheduledClaim, bool) {
 	var (
 		email       string
