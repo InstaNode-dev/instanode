@@ -76,6 +76,30 @@ func (s *server) handleNewDB(w http.ResponseWriter, r *http.Request) {
 	isAuthed := authedUser != nil
 	isPaid := isAuthed && authedUser.PlanTier == "paid"
 
+	// Idempotent-by-name for authenticated callers: if the user already owns
+	// an active postgres resource with this name, return it. Makes the
+	// "store $DATABASE_URL, re-run the script" pattern safe across runs.
+	if isAuthed {
+		if existing := s.lookupExistingNamed(ctx, authedUser.ID, "postgres", name); existing != nil {
+			resp := map[string]any{
+				"ok":             true,
+				"id":             existing.id,
+				"token":          existing.token,
+				"name":           name,
+				"connection_url": existing.connectionURL,
+				"tier":           existing.tier,
+				"limits":         map[string]any{"storage_mb": s.cfg.Postgres.StorageMB, "connections": s.cfg.Postgres.ConnLimit},
+				"note":           fmt.Sprintf("Returning your existing %q database. Delete it via DELETE /api/me/resources/%s to provision a new one with this name.", name, existing.token),
+			}
+			if existing.expiresAt.Valid {
+				resp["expires_at"] = existing.expiresAt.Time
+				resp["limits"].(map[string]any)["expires_in"] = s.cfg.Limits.AnonTTL
+			}
+			writeJSON(w, http.StatusOK, resp)
+			return
+		}
+	}
+
 	if !isAuthed {
 		exceeded, existing := s.checkLimitAndIncrement(ctx, fp, "postgres")
 		if exceeded {
@@ -217,6 +241,27 @@ func (s *server) handleNewWebhook(w http.ResponseWriter, r *http.Request) {
 	authedUser := s.authUser(r)
 	isAuthed := authedUser != nil
 	isPaid := isAuthed && authedUser.PlanTier == "paid"
+	// Idempotent-by-name for authenticated callers — see handleNewDB for rationale.
+	if isAuthed {
+		if existing := s.lookupExistingNamed(ctx, authedUser.ID, "webhook", name); existing != nil {
+			resp := map[string]any{
+				"ok":          true,
+				"id":          existing.id,
+				"token":       existing.token,
+				"name":        name,
+				"receive_url": existing.connectionURL,
+				"tier":        existing.tier,
+				"limits":      map[string]any{"requests_stored": s.cfg.Limits.WebhookMaxStored},
+				"note":        fmt.Sprintf("Returning your existing %q webhook. Delete it via DELETE /api/me/resources/%s to provision a new one with this name.", name, existing.token),
+			}
+			if existing.expiresAt.Valid {
+				resp["expires_at"] = existing.expiresAt.Time
+				resp["limits"].(map[string]any)["expires_in"] = s.cfg.Limits.AnonTTL
+			}
+			writeJSON(w, http.StatusOK, resp)
+			return
+		}
+	}
 
 	if !isAuthed {
 		exceeded, existing := s.checkLimitAndIncrement(ctx, fp, "webhook")
@@ -377,6 +422,46 @@ type existingResource struct {
 	token         string
 	connectionURL string
 	keyPrefix     string
+}
+
+// namedResource is what lookupExistingNamed returns — just the fields a
+// "returning your existing resource" response needs to reconstruct.
+type namedResource struct {
+	id            string
+	token         string
+	connectionURL string
+	tier          string
+	expiresAt     sql.NullTime
+}
+
+// lookupExistingNamed makes POST /db/new and POST /webhook/new idempotent by
+// name for authenticated callers. If the user already owns an active
+// resource of (resourceType, name), the handler returns that one instead
+// of spinning up a duplicate — preserving the re-run-my-script pattern
+// ("store DATABASE_URL in .env, re-run provisions tomorrow, same DB").
+// Unauthed callers don't use this (fingerprint dedup already handles abuse).
+// Returns nil on no-match or on any DB error (caller falls through to
+// create; worst case is a duplicate, not a 5xx).
+func (s *server) lookupExistingNamed(ctx context.Context, userID uuid.UUID, resourceType, name string) *namedResource {
+	var r namedResource
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, token, connection_url, tier, expires_at
+		 FROM resources
+		 WHERE migrated_to_user_id = $1
+		   AND resource_type       = $2
+		   AND name                = $3
+		   AND status              = 'active'
+		 LIMIT 1`,
+		userID, resourceType, name,
+	).Scan(&r.id, &r.token, &r.connectionURL, &r.tier, &r.expiresAt)
+	if err != nil {
+		if err != sql.ErrNoRows {
+			slog.WarnContext(ctx, "lookupExistingNamed: query failed; falling through to create",
+				"error", err, "user_id", userID, "name", name, "type", resourceType)
+		}
+		return nil
+	}
+	return &r
 }
 
 // checkLimitAndIncrement atomically increments the provision counter and checks
