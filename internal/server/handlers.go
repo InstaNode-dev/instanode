@@ -89,7 +89,15 @@ func (s *server) handleNewDB(w http.ResponseWriter, r *http.Request) {
 				"connection_url": existing.connectionURL,
 				"tier":           existing.tier,
 				"limits":         map[string]any{"storage_mb": s.cfg.Postgres.StorageMB, "connections": s.cfg.Postgres.ConnLimit},
-				"note":           fmt.Sprintf("Returning your existing %q database. Delete it via DELETE /api/me/resources/%s to provision a new one with this name.", name, existing.token),
+			}
+			// Paid users can DELETE; free users can't (DELETE returns 403
+			// paid_tier_only), so don't suggest it on the free-tier path —
+			// that would send them to an endpoint they can't use. Steer them
+			// to upgrade instead.
+			if existing.tier == "paid" {
+				resp["note"] = fmt.Sprintf("Returning your existing %q database. Delete it via DELETE /api/me/resources/%s to provision a new one with this name.", name, existing.token)
+			} else {
+				resp["note"] = fmt.Sprintf("Returning your existing %q database. Free-tier resources auto-expire in 24h; upgrade to Developer for manual delete + re-provision: %s/pricing.html", name, s.marketingURL)
 			}
 			if existing.expiresAt.Valid {
 				resp["expires_at"] = existing.expiresAt.Time
@@ -252,7 +260,13 @@ func (s *server) handleNewWebhook(w http.ResponseWriter, r *http.Request) {
 				"receive_url": existing.connectionURL,
 				"tier":        existing.tier,
 				"limits":      map[string]any{"requests_stored": s.cfg.Limits.WebhookMaxStored},
-				"note":        fmt.Sprintf("Returning your existing %q webhook. Delete it via DELETE /api/me/resources/%s to provision a new one with this name.", name, existing.token),
+			}
+			// Same caveat as handleNewDB: don't point free-tier users at a
+			// DELETE endpoint they'd 403 on.
+			if existing.tier == "paid" {
+				resp["note"] = fmt.Sprintf("Returning your existing %q webhook. Delete it via DELETE /api/me/resources/%s to provision a new one with this name.", name, existing.token)
+			} else {
+				resp["note"] = fmt.Sprintf("Returning your existing %q webhook. Free-tier resources auto-expire in 24h; upgrade to Developer for manual delete + re-provision: %s/pricing.html", name, s.marketingURL)
 			}
 			if existing.expiresAt.Valid {
 				resp["expires_at"] = existing.expiresAt.Time
