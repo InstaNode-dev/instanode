@@ -1,163 +1,126 @@
 # instant-lite-api
 
-Backend API for instanode.dev — provisions real Postgres databases, Redis caches, and webhook
-receivers with one HTTP call. No account, no Docker, no configuration.
-
-## Git hooks
-
-`.githooks/pre-push` blocks direct pushes to `master` to keep changes flowing
-through PRs. Server-side protection is paywalled on GitHub's Free plan for
-private repos, so this hook is the local stand-in. Opt in once after cloning:
-
-```sh
-git config core.hooksPath .githooks
-```
-
-Emergency bypass: `git push --no-verify`.
-
-## Architecture
-
-```
-instanode.dev (GitHub Pages)  ←  Static HTML/CSS/JS (instant-lite-web/)
-       │
-       │  curl commands point to:
-       ▼
-api.instanode.dev (bare metal / Fly.io)  ←  This repo
-       │
-       ├── Postgres (CREATE DATABASE per token)
-       └── Redis (ACL SETUSER per token)
-```
-
-The website is hosted separately on GitHub Pages. This repo is the API only.
-Website traffic surges never affect provisioning.
-
-## Quick start (docker compose)
+Zero-setup database provisioning over HTTP. Single binary, one curl, real
+Postgres connection string. Built for AI coding agents and local prototyping.
 
 ```bash
-docker compose up -d --build
+curl -X POST http://localhost:8080/db/new
+# → { "connection_url": "postgres://...", "expires_at": "...", ... }
+```
+
+Same shape for webhook receivers (`POST /webhook/new`). No signup, no
+Docker required in the caller's environment, no dashboard to navigate.
+
+## What ships today
+
+- `POST /db/new` — provisions an isolated Postgres database (per-token
+  CREATE DATABASE + CREATE USER + CONNECTION LIMIT)
+- `POST /webhook/new` + `GET/POST /webhook/receive/{token}` — webhook
+  receiver for testing third-party callbacks
+- GitHub OAuth login, `/claim` to convert anonymous 24h resources into
+  permanent ones
+- Razorpay-based billing (optional — runs fine without it)
+
+Redis, Mongo, queue, and object storage provisioning are on the roadmap.
+See [`ARCHITECTURE.md`](ARCHITECTURE.md) for the production deployment
+layout.
+
+## Quick start
+
+### Docker Compose
+
+```bash
+git clone https://github.com/InstaNode-dev/instant-lite-api
+cd instant-lite-api
+make docker-up
 
 curl -s -X POST http://localhost:18080/db/new | jq
-curl -s -X POST http://localhost:18080/cache/new | jq
 curl -s -X POST http://localhost:18080/webhook/new | jq
 curl -s http://localhost:18080/healthz | jq
 
-docker compose down -v
+make docker-down
 ```
 
-Docker Compose mounts `config.docker.yaml` into the container automatically.
+`docker-compose.yml` mounts `config.docker.yaml` into the container
+automatically — it's pre-configured for the bundled Postgres + Redis.
 
-## Quick start (local, no Docker)
+### Bare Go
+
+Prereqs: Go 1.25+, Postgres, Redis (optional).
 
 ```bash
-# Prerequisites: Go 1.24+, Postgres, Redis
+cp config.example.yaml config.yaml        # edit the DB urls
 createdb instant_lite
-psql instant_lite < schema.sql
-redis-server &
+psql instant_lite < internal/server/schema.sql
 
-# Edit config.yaml to match your local setup, then:
-go run .
+make run
 ```
 
 ## Configuration
 
-All settings live in `config.yaml`. The only environment variable is `CONFIG_PATH`
-(defaults to `config.yaml`) to locate the config file.
+Everything lives in `config.yaml`. `CONFIG_PATH` is the only env var the
+binary reads directly; secrets are picked up from their documented env
+overrides (see [`config.example.yaml`](config.example.yaml) for the full
+list).
 
-```yaml
-server:
-  port: "8080"
-  base_url: ""                  # Auto-derived if empty
-  read_timeout: "10s"
-  write_timeout: "30s"
-  idle_timeout: "60s"
+Three commonly-adjusted fields for self-hosters:
 
-database:
-  platform_url: "postgres://instant:instant@localhost:5432/instant_lite?sslmode=disable"
-  customer_url: ""              # Falls back to platform_url if empty
-  max_open_conns: 20
-  max_idle_conns: 5
+| Field | What it controls |
+|---|---|
+| `server.base_url` | Public API URL this binary serves. Baked into webhook receive URLs emitted to clients. |
+| `server.marketing_url` | Public website URL for post-OAuth redirects + upgrade CTAs. Empty ⇒ those paths 404, binary runs fine. |
+| `server.cookie_domain` | Session cookie `Domain`. Empty = host-only. Set to a registrable domain to share across `api.example.com` + `example.com`. |
 
-redis:
-  url: "redis://localhost:6379"
+Billing is optional: leave `razorpay.*` empty and the payment endpoints
+return 503 instead of calling out.
 
-limits:
-  rate_requests_per_second: 10  # HTTP rate limit (token bucket)
-  rate_burst: 20                # Max burst
-  max_provisions_per_day: 5     # Per-IP/subnet daily cap
-  anon_ttl: "24h"               # TTL for anonymous resources
-  max_request_body_bytes: 1048576
-  webhook_max_body_bytes: 1048576
-  webhook_max_stored: 100
-  ipv4_cidr_prefix: 24          # Subnet grouping for fingerprinting
-  ipv6_cidr_prefix: 48
+## Project layout
 
-reaper:
-  interval: "5m"                # Cleanup frequency
-  batch_size: 50                # Max resources cleaned per cycle
-  timeout: "60s"                # Context timeout per cycle
-
-postgres:
-  conn_limit: 2                 # CONNECTION LIMIT per provisioned DB
-  storage_mb: 10                # Storage quota hint
-  statement_timeout: "30s"      # Max query time per provisioned user
+```
+cmd/server/              thin main() entrypoint
+internal/server/         everything else — handlers, auth, billing, db, etc.
+  paths.go               route-path constants
+  payment.go             billing-provider interface
+  razorpay_client.go     razorpayPayment impl + SDK helpers
+  payment_noop.go        no-op impl (when billing unconfigured)
+  billing*.go            orders / webhook / subscriptions / change-plan / reconciler
+  handlers.go            /db/new, /webhook/new provisioning
+  auth.go                GitHub OAuth, JWT sessions
+  reaper.go              background cleanup of expired resources
 ```
 
-For Docker deployments, edit `config.docker.yaml` (hostnames differ inside containers).
+## Shipped endpoints
 
-## Deploy to Fly.io
+| Method | Path | Purpose |
+|---|---|---|
+| `POST` | `/db/new` | Provision a Postgres database |
+| `POST` | `/webhook/new` | Provision a webhook receiver |
+| `POST`/`GET` | `/webhook/receive/{token}` | Receive webhook payloads |
+| `GET` | `/auth/github/login` | Start OAuth login |
+| `GET` | `/auth/me` | Current session user |
+| `POST` | `/api/me/claim` | Claim an anonymous resource into an account |
+| `GET` | `/api/me/resources` | List the caller's resources |
+| `GET` | `/healthz` | Liveness |
+| `GET` | `/readyz` | Readiness (pings all downstream deps) |
+| `GET` | `/openapi.json` | OpenAPI 3.1 schema |
+| `GET` | `/llms.txt` | Machine-readable docs for AI agents |
 
-```bash
-fly launch --copy-config --no-deploy --name instant-lite-api --region iad
-fly postgres create --name instant-lite-db --region iad --vm-size shared-cpu-1x
-fly redis create --name instant-lite-redis --region iad --plan free
-fly postgres attach instant-lite-db -a instant-lite-api
-fly redis attach instant-lite-redis -a instant-lite-api
-# Upload your config.yaml as a secret or mount via fly.toml
-fly deploy
-fly ssh console -a instant-lite-api -C "psql \$DATABASE_URL -f /app/schema.sql"
-```
+Full spec at `GET /openapi.json`.
 
-## Deploy to bare metal / VPS
+## Deploying
 
-```bash
-CGO_ENABLED=0 go build -o instant-lite-api .
-scp instant-lite-api schema.sql config.yaml user@yourserver:~/
+- **Fly.io**: `fly.toml` and `spec.yaml.tpl` included; `fly launch
+  --copy-config --no-deploy` to start.
+- **DigitalOcean App Platform**: `spec.yaml.tpl` is a DO App spec template;
+  `deploy-do.sh` shows the full path.
+- **Bare VPS**: `make build` → copy `bin/instant-lite` + `config.yaml` +
+  `schema.sql` → run behind Caddy or any reverse proxy.
 
-# On server:
-sudo -u postgres createdb instant_lite
-psql instant_lite < schema.sql
+## Contributing
 
-# Edit config.yaml with production values, then:
-./instant-lite-api
-```
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for dev setup, PR conventions, and
+code style. TL;DR: `make test && make vet` before every push.
 
-Put Caddy in front for automatic HTTPS:
-```
-# /etc/caddy/Caddyfile
-api.instanode.dev {
-    reverse_proxy localhost:8080
-}
-```
+## License
 
-## Endpoints
-
-| Method | Path | What it does |
-|--------|------|-------------|
-| POST | `/db/new` | Provision a Postgres database |
-| POST | `/cache/new` | Provision a Redis cache |
-| POST | `/webhook/new` | Provision a webhook receiver |
-| POST | `/webhook/receive/{token}` | Receive a webhook payload |
-| GET | `/healthz` | Health check |
-| GET | `/llms.txt` | Machine-readable docs for AI agents |
-| GET | `/` | 302 redirect to https://instanode.dev |
-
-## Security
-
-All security parameters are configurable via `config.yaml`:
-
-- **Daily provision limit:** Configurable per IP/subnet (atomic Redis counter, Postgres fallback)
-- **HTTP rate limit:** Configurable req/s per IP (token bucket)
-- **Request body limit:** Configurable max bytes
-- **Postgres isolation:** Separate database + user per token, configurable CONNECTION LIMIT and statement_timeout
-- **Redis isolation:** ACL user per token, key-prefix enforcement
-- **Expired resource cleanup:** Background reaper with configurable interval and batch size
+MIT. See [`LICENSE`](LICENSE).
