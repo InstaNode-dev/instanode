@@ -334,7 +334,7 @@ func TestBuildHumanPlanLabel_Halted(t *testing.T) {
 
 func TestBuildAvailableUpgrades_FreeSeeesBothPaths(t *testing.T) {
 	u := &User{PlanTier: "free"}
-	out := buildAvailableUpgrades(u)
+	out := buildAvailableUpgrades("https://api.example.test", u)
 	if len(out) != 2 {
 		t.Fatalf("free tier should see 2 upgrades, got %d", len(out))
 	}
@@ -345,7 +345,7 @@ func TestBuildAvailableUpgrades_FreeSeeesBothPaths(t *testing.T) {
 }
 
 func TestBuildAvailableUpgrades_NilUserDefaultsToFree(t *testing.T) {
-	out := buildAvailableUpgrades(nil)
+	out := buildAvailableUpgrades("https://api.example.test", nil)
 	if len(out) != 2 {
 		t.Errorf("nil user should still see 2 upgrade paths (free behaviour), got %d", len(out))
 	}
@@ -353,7 +353,7 @@ func TestBuildAvailableUpgrades_NilUserDefaultsToFree(t *testing.T) {
 
 func TestBuildAvailableUpgrades_PaidMonthlySeesAnnual(t *testing.T) {
 	u := &User{PlanTier: "paid", PlanPeriod: "monthly"}
-	out := buildAvailableUpgrades(u)
+	out := buildAvailableUpgrades("https://api.example.test", u)
 	if len(out) != 1 {
 		t.Fatalf("paid monthly should see 1 upgrade (annual), got %d", len(out))
 	}
@@ -364,7 +364,7 @@ func TestBuildAvailableUpgrades_PaidMonthlySeesAnnual(t *testing.T) {
 
 func TestBuildAvailableUpgrades_PaidAnnualSeesNothing(t *testing.T) {
 	u := &User{PlanTier: "paid", PlanPeriod: "annual"}
-	out := buildAvailableUpgrades(u)
+	out := buildAvailableUpgrades("https://api.example.test", u)
 	if len(out) != 0 {
 		t.Errorf("paid annual should see 0 upgrades, got %d: %v", len(out), out)
 	}
@@ -372,7 +372,7 @@ func TestBuildAvailableUpgrades_PaidAnnualSeesNothing(t *testing.T) {
 
 func TestBuildAvailableUpgrades_InstructionShape(t *testing.T) {
 	u := &User{PlanTier: "free"}
-	out := buildAvailableUpgrades(u)
+	out := buildAvailableUpgrades("https://api.example.test", u)
 	if len(out) == 0 {
 		t.Fatal("need at least one upgrade for this test")
 	}

@@ -77,7 +77,7 @@ func (s *server) handleGetPlan(w http.ResponseWriter, r *http.Request) {
 	}
 
 	humanLabel := buildHumanPlanLabel(user)
-	upgrades := buildAvailableUpgrades(user)
+	upgrades := buildAvailableUpgrades(s.baseURL, user)
 
 	payload := map[string]any{
 		"plan_tier":                user.PlanTier,
@@ -165,7 +165,7 @@ func (s *server) handleDeleteResource(w http.ResponseWriter, r *http.Request) {
 			"ok":          false,
 			"error":       "paid_tier_only",
 			"message":     "Delete is a Developer-tier feature. Free-tier resources auto-expire in 24 hours — upgrade to remove them on demand.",
-			"upgrade_url": "https://instanode.dev/pricing.html?token=" + tokenUUID.String(),
+			"upgrade_url": s.marketingURL + pathMarketingPricingPage + "?token=" + tokenUUID.String(),
 		})
 		return
 	}
@@ -447,7 +447,7 @@ func planPriceLabels(currency string) (monthly, annual string) {
 // self-describing instruction (method/url/body/auth) so the agent can
 // subscribe without scraping docs. Free → monthly + annual; paid monthly →
 // annual; paid annual → none (cancellation-only).
-func buildAvailableUpgrades(user *User) []map[string]any {
+func buildAvailableUpgrades(baseURL string, user *User) []map[string]any {
 	upgrades := []map[string]any{}
 	instruction := func(plan, label string, price int, interval string) map[string]any {
 		return map[string]any{
@@ -457,7 +457,7 @@ func buildAvailableUpgrades(user *User) []map[string]any {
 			"billing_interval": interval,
 			"how_to_subscribe": map[string]any{
 				"method":         "POST",
-				"url":            "https://api.instanode.dev/billing/create-subscription",
+				"url":            baseURL + pathAPIBillingSubscription,
 				"headers":        map[string]string{"Authorization": "Bearer <INSTANODE_TOKEN>", "Content-Type": "application/json"},
 				"body":           map[string]string{"plan": plan},
 				"response_field": "short_url",

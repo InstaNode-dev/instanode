@@ -87,6 +87,24 @@ type ServerConfig struct {
 	ReadTimeout  string `yaml:"read_timeout"`
 	WriteTimeout string `yaml:"write_timeout"`
 	IdleTimeout  string `yaml:"idle_timeout"`
+
+	// MarketingURL is the public website host (landing, /pricing, /dashboard).
+	// Used for post-OAuth redirects, upgrade links, email CTAs. Leave empty to
+	// disable marketing redirects entirely (the API will 404 those paths).
+	MarketingURL string `yaml:"marketing_url"`
+
+	// CookieDomain is the Domain attribute on the session cookie. Set to the
+	// bare registrable domain (e.g. "example.com") to share the session
+	// across api.example.com and example.com. Leave empty to scope the
+	// cookie to the API host only — the right default for single-host
+	// deployments and local development.
+	CookieDomain string `yaml:"cookie_domain"`
+
+	// AllowedOrigins is the exact-match allowlist echoed into
+	// Access-Control-Allow-Origin for browser clients. Non-matching
+	// browser origins fall back to a wildcard with no credentials. Non-
+	// browser callers (curl, SDK) are unaffected either way.
+	AllowedOrigins []string `yaml:"allowed_origins"`
 }
 
 type DatabaseConfig struct {
@@ -178,6 +196,12 @@ func DefaultConfig() *Config {
 			ReadTimeout:  "10s",
 			WriteTimeout: "30s",
 			IdleTimeout:  "60s",
+			MarketingURL: "http://localhost:5173",
+			CookieDomain: "",
+			AllowedOrigins: []string{
+				"http://localhost:5173",
+				"http://localhost:3000",
+			},
 		},
 		Database: DatabaseConfig{
 			PlatformURL:  "postgres://instant:instant@localhost:5432/instant_lite?sslmode=disable",
@@ -213,8 +237,8 @@ func DefaultConfig() *Config {
 		},
 		Email: EmailConfig{
 			SMTPPort:    587,
-			FromAddress: "no-reply@instanode.dev",
-			FromName:    "instanode",
+			FromAddress: "no-reply@example.com",
+			FromName:    "instant-lite",
 		},
 		Observability: ObservabilityConfig{
 			Enabled:      false,

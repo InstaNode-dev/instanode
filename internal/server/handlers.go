@@ -227,16 +227,9 @@ func (s *server) handleNewWebhook(w http.ResponseWriter, r *http.Request) {
 		t := time.Now().UTC().Add(anonTTL)
 		expiresAt = &t
 	}
-	// baseURL is the marketing host (https://instanode.dev) which serves
-	// static pages on GitHub Pages — POST requests to it return 405. Emit
-	// webhook receive URLs against the API host instead.
-	receiveBase := s.cfg.Server.BaseURL
-	if strings.HasPrefix(receiveBase, "https://instanode.dev") {
-		receiveBase = "https://api.instanode.dev"
-	} else if strings.HasPrefix(receiveBase, "http://instanode.dev") {
-		receiveBase = "http://api.instanode.dev"
-	}
-	receiveURL := fmt.Sprintf("%s/webhook/receive/%s", receiveBase, token.String())
+	// receive URLs always target the API host (this binary). BaseURL is the
+	// API host by contract — configure it to the public API URL in production.
+	receiveURL := strings.TrimRight(s.baseURL, "/") + pathAPIWebhookReceive + token.String()
 
 	id := uuid.New()
 	var err error

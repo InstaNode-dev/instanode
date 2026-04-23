@@ -62,6 +62,13 @@ func (e *emailer) send(ctx context.Context, to, subject, htmlBody string) error 
 }
 
 // ── Templates (inline HTML — deliberately minimal; swap for Brevo template IDs if volume grows). ──
+//
+// TODO(self-hoster): these templates hard-code URLs (instanode.dev) and a
+// support email (contact@instanode.dev). Customize them for your deployment —
+// either replace the strings inline or move to a templating layer that reads
+// server.MarketingURL and a new SupportAddress config field. Left as-is on
+// the OSS branch so the code doesn't diverge from the reference deployment
+// before a proper templating abstraction lands.
 
 func welcomeEmail() (subject, html string) {
 	subject = "Welcome to instanode"

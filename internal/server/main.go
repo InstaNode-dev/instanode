@@ -27,13 +27,14 @@ var llmsTxt []byte
 var schemaSQL string
 
 type server struct {
-	db        *sql.DB
-	rdb       *redis.Client // Valkey (rate limits, webhook storage, and where
-	                        // per-tenant ACL users are provisioned)
-	cfg       *Config
-	baseURL   string
-	custDBURL string // customer Postgres (where we CREATE DATABASE)
-	email     *emailer
+	db           *sql.DB
+	rdb          *redis.Client // Valkey (rate limits, webhook storage, and where
+	                           // per-tenant ACL users are provisioned)
+	cfg          *Config
+	baseURL      string // API host, e.g. https://api.example.com — served by this binary
+	marketingURL string // public website host, e.g. https://example.com — served elsewhere
+	custDBURL    string // customer Postgres (where we CREATE DATABASE)
+	email        *emailer
 }
 
 // Run boots the instant-lite server: loads config, initializes
@@ -101,12 +102,13 @@ func Run() {
 	}
 
 	s := &server{
-		db:        db,
-		rdb:       rdb,
-		cfg:       cfg,
-		baseURL:   cfg.Server.BaseURL,
-		custDBURL: cfg.Database.CustomerURL,
-		email:     newEmailer(cfg.Email),
+		db:           db,
+		rdb:          rdb,
+		cfg:          cfg,
+		baseURL:      cfg.Server.BaseURL,
+		marketingURL: cfg.Server.MarketingURL,
+		custDBURL:    cfg.Database.CustomerURL,
+		email:        newEmailer(cfg.Email),
 	}
 
 	// Start the expired resource reaper.
@@ -175,10 +177,18 @@ func Run() {
 	mux.HandleFunc("GET /api/me/plan", s.handleGetPlan)
 	mux.HandleFunc("DELETE /api/me/resources/{token}", s.handleDeleteResource)
 	mux.HandleFunc("GET /dashboard", func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, "https://instanode.dev/dashboard", http.StatusFound)
+		if s.marketingURL == "" {
+			http.NotFound(w, r)
+			return
+		}
+		http.Redirect(w, r, s.marketingURL+pathMarketingDashboard, http.StatusFound)
 	})
 	mux.HandleFunc("GET /pricing", func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, "https://instanode.dev/pricing", http.StatusFound)
+		if s.marketingURL == "" {
+			http.NotFound(w, r)
+			return
+		}
+		http.Redirect(w, r, s.marketingURL+pathMarketingPricing, http.StatusFound)
 	})
 
 	// Health
@@ -222,15 +232,20 @@ func Run() {
 	})
 	mux.HandleFunc("GET /openapi.json", s.handleOpenAPI)
 
-	// Root — redirect to website (hosted separately on GitHub Pages).
+	// Root — redirect to marketing site (hosted elsewhere). When MarketingURL
+	// is empty (self-hoster didn't configure one), fall through to 404 so the
+	// binary stays usable without a website alongside it.
 	mux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/" {
-			http.Redirect(w, r, "https://instanode.dev", http.StatusFound)
+		if s.marketingURL == "" {
+			http.NotFound(w, r)
 			return
 		}
-		if r.URL.Path == "/start" {
-			// Serve the start page or redirect to frontend
-			http.Redirect(w, r, "https://instanode.dev/start" + r.URL.RawQuery, http.StatusFound)
+		if r.URL.Path == "/" {
+			http.Redirect(w, r, s.marketingURL, http.StatusFound)
+			return
+		}
+		if r.URL.Path == pathMarketingStart {
+			http.Redirect(w, r, s.marketingURL+pathMarketingStart+r.URL.RawQuery, http.StatusFound)
 			return
 		}
 		http.NotFound(w, r)
@@ -281,16 +296,20 @@ func withMiddleware(next http.Handler, cfg *Config) http.Handler {
 
 		w.Header().Set("X-Request-ID", fmt.Sprintf("%d", time.Now().UnixNano()))
 		// Browsers reject Access-Control-Allow-Credentials: true together with
-		// a wildcard origin. Echo the request Origin when it's one of ours,
+		// a wildcard origin. Echo the request Origin when it's one we allow,
 		// otherwise fall back to wildcard for non-browser (curl/SDK) clients.
 		origin := r.Header.Get("Origin")
-		switch origin {
-		case "https://instanode.dev", "http://localhost:5173", "http://localhost:3000":
-			w.Header().Set("Access-Control-Allow-Origin", origin)
-			w.Header().Set("Access-Control-Allow-Credentials", "true")
-			w.Header().Set("Vary", "Origin")
-		case "":
+		if origin == "" {
 			w.Header().Set("Access-Control-Allow-Origin", "*")
+		} else {
+			for _, allowed := range cfg.Server.AllowedOrigins {
+				if origin == allowed {
+					w.Header().Set("Access-Control-Allow-Origin", origin)
+					w.Header().Set("Access-Control-Allow-Credentials", "true")
+					w.Header().Set("Vary", "Origin")
+					break
+				}
+			}
 		}
 		w.Header().Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS, PUT, DELETE")
 		w.Header().Set("Access-Control-Allow-Headers", "Accept, Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, X-Requested-With")

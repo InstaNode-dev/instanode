@@ -45,8 +45,8 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.Email.SMTPPort != 587 {
 		t.Errorf("Email.SMTPPort = %d, want 587", cfg.Email.SMTPPort)
 	}
-	if cfg.Email.FromAddress != "no-reply@instanode.dev" {
-		t.Errorf("Email.FromAddress = %q, want %q", cfg.Email.FromAddress, "no-reply@instanode.dev")
+	if cfg.Email.FromAddress != "no-reply@example.com" {
+		t.Errorf("Email.FromAddress = %q, want %q", cfg.Email.FromAddress, "no-reply@example.com")
 	}
 }
 

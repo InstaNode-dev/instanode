@@ -120,7 +120,7 @@ func (s *server) handleCreateSubscription(w http.ResponseWriter, r *http.Request
 			slog.ErrorContext(r.Context(), "razorpay subscription create failed",
 				"error", res.err, "user_id", user.ID, "plan", req.Plan, "elapsed_ms", elapsed.Milliseconds())
 			writeError(w, http.StatusBadGateway, "payment_gateway_error",
-				"Payment provider returned an error — please try again in a moment. If the problem persists, email contact@instanode.dev.")
+				"Payment provider returned an error — please try again in a moment. If the problem persists, contact support.")
 			return
 		}
 		slog.InfoContext(r.Context(), "razorpay subscription create: ok",

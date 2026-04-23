@@ -25,7 +25,11 @@ func (s *server) oauthFail(w http.ResponseWriter, r *http.Request, code string, 
 	} else {
 		slog.WarnContext(r.Context(), "oauth: "+code)
 	}
-	http.Redirect(w, r, "https://instanode.dev/start?error="+url.QueryEscape(code), http.StatusFound)
+	if s.marketingURL == "" {
+		writeError(w, http.StatusBadRequest, "oauth_"+code, "OAuth flow failed.")
+		return
+	}
+	http.Redirect(w, r, s.marketingURL+pathMarketingStartErrorQS+url.QueryEscape(code), http.StatusFound)
 }
 
 type User struct {
@@ -296,23 +300,29 @@ func (s *server) handleGitHubCallback(w http.ResponseWriter, r *http.Request) {
 		s.email.SendAsync(githubUser.Email, subject, html)
 	}
 
-	// Session cookie. Shared across api.instanode.dev and instanode.dev so
-	// the static marketing/dashboard pages can authenticate fetch() calls
-	// against the API. SameSite=None + Secure are required by modern
-	// browsers for cross-site cookie sends.
+	// Session cookie. When CookieDomain is set (e.g. "example.com"), the
+	// cookie is shared across api.example.com and example.com so static
+	// marketing pages can authenticate fetch() calls against the API. Leave
+	// empty to scope to the API host only (the right default for single-host
+	// and local-dev deployments). SameSite=None + Secure are required by
+	// modern browsers for cross-site cookie sends.
 	http.SetCookie(w, &http.Cookie{
 		Name:     "session",
 		Value:    token,
 		Path:     "/",
-		Domain:   "instanode.dev",
+		Domain:   s.cfg.Server.CookieDomain,
 		HttpOnly: true,
 		Secure:   true,
 		SameSite: http.SameSiteNoneMode,
 		MaxAge:   int(jwtTTL.Seconds()),
 	})
 
-	// After login, drop the user on the dashboard on the marketing domain.
-	http.Redirect(w, r, "https://instanode.dev/dashboard.html", http.StatusFound)
+	// After login, drop the user on the dashboard on the marketing site.
+	dashURL := pathMarketingDashboardPage
+	if s.marketingURL != "" {
+		dashURL = s.marketingURL + pathMarketingDashboardPage
+	}
+	http.Redirect(w, r, dashURL, http.StatusFound)
 }
 
 func (s *server) handleLogout(w http.ResponseWriter, r *http.Request) {
@@ -320,13 +330,17 @@ func (s *server) handleLogout(w http.ResponseWriter, r *http.Request) {
 		Name:     "session",
 		Value:    "",
 		Path:     "/",
-		Domain:   "instanode.dev",
+		Domain:   s.cfg.Server.CookieDomain,
 		HttpOnly: true,
 		Secure:   true,
 		SameSite: http.SameSiteNoneMode,
 		MaxAge:   -1,
 	})
-	http.Redirect(w, r, "https://instanode.dev/", http.StatusFound)
+	home := pathMarketingHome
+	if s.marketingURL != "" {
+		home = s.marketingURL + pathMarketingHome
+	}
+	http.Redirect(w, r, home, http.StatusFound)
 }
 
 func (s *server) handleMe(w http.ResponseWriter, r *http.Request) {

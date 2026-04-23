@@ -37,7 +37,7 @@ import (
 
 // maxInboundBodyBytes caps the POST body. Brevo inbound payloads can be
 // surprisingly large (HTML bodies + inlined attachments in base64), but 10 MB
-// is well above any realistic email we'd expect at contact@instanode.dev.
+// is well above any realistic inbound email we'd expect.
 const maxInboundBodyBytes = 10 * 1024 * 1024
 
 // inboundMessage is the flattened, DB-ready representation of one parsed

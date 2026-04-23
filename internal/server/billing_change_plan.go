@@ -292,7 +292,7 @@ func (s *server) handleCancelPlanChange(w http.ResponseWriter, r *http.Request) 
 		return
 	case cancelSwitchAlreadyFired:
 		writeError(w, http.StatusConflict, "switch_already_fired",
-			"The switch has already been initiated at the billing provider — email contact@instanode.dev if you need to reverse it.")
+			"The switch has already been initiated at the billing provider — contact support if you need to reverse it.")
 		return
 	}
 
@@ -316,7 +316,7 @@ func (s *server) handleCancelPlanChange(w http.ResponseWriter, r *http.Request) 
 	if err == sql.ErrNoRows {
 		// Race: someone else cleared it (e.g. reconciler just fired).
 		writeError(w, http.StatusConflict, "switch_already_fired",
-			"The switch has just been initiated — email contact@instanode.dev to reverse it.")
+			"The switch has just been initiated — contact support to reverse it.")
 		return
 	}
 	if err != nil {
