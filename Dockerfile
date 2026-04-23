@@ -3,12 +3,12 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /bin/instant-lite .
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /bin/instant-lite ./cmd/server
 
 FROM alpine:3.20
 RUN apk add --no-cache ca-certificates postgresql-client gettext
 COPY --from=build /bin/instant-lite /usr/local/bin/instant-lite
-COPY schema.sql /app/schema.sql
+COPY internal/server/schema.sql /app/schema.sql
 COPY config.prod.yaml.tpl /app/config.prod.yaml.tpl
 ENV CONFIG_PATH=/app/config.yaml
 EXPOSE 8080

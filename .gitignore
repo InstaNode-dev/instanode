@@ -2,8 +2,15 @@
 .env
 config.prod.yaml
 config.local.yaml
+config.yaml
 spec.yaml
 
-# Binary
+# Binaries
+bin/
 instant-lite-api
 lite
+
+# IDE
+.vscode/
+.idea/
+*.swp

@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache: true
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: gofmt
+        run: |
+          diff=$(gofmt -d .)
+          if [ -n "$diff" ]; then
+            echo "gofmt wants these changes:"
+            echo "$diff"
+            exit 1
+          fi
+
+      - name: go test
+        run: go test ./...
+
+      - name: build
+        run: go build ./...
