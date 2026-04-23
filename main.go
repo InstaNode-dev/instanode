@@ -165,6 +165,7 @@ func main() {
 	// Dashboard endpoints
 	mux.HandleFunc("GET /api/me/resources", s.handleGetResources)
 	mux.HandleFunc("POST /api/me/claim", s.handleClaimToken)
+	mux.HandleFunc("GET /claim/preview", s.handleClaimPreview)
 	mux.HandleFunc("GET /api/me/token", s.handleGetAPIToken)
 	mux.HandleFunc("GET /api/me/plan", s.handleGetPlan)
 	mux.HandleFunc("DELETE /api/me/resources/{token}", s.handleDeleteResource)
