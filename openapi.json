@@ -453,6 +453,50 @@
         }
       }
     },
+    "/claim/preview": {
+      "get": {
+        "tags": ["dashboard"],
+        "summary": "Preview a resource before claiming it",
+        "description": "Unauthenticated read-only view of a resource so the /start?token=… landing page can show what the visitor is about to claim (type, name, tier, expiry) before they sign in. The token itself is the capability — anyone holding it can already call POST /api/me/claim, so this preview does not widen the attack surface. connection_url and owner identity are never returned.",
+        "operationId": "claimPreview",
+        "parameters": [
+          {
+            "name": "token",
+            "in": "query",
+            "required": true,
+            "schema": {"type": "string", "format": "uuid"},
+            "description": "The token returned from /db/new or /webhook/new."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Resource exists and is active.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["ok", "resource_type", "name", "tier", "status", "created_at", "already_claimed"],
+                  "properties": {
+                    "ok":                 {"type": "boolean"},
+                    "resource_type":      {"type": "string"},
+                    "name":               {"type": "string"},
+                    "tier":               {"$ref": "#/components/schemas/Tier"},
+                    "status":             {"type": "string"},
+                    "created_at":         {"type": "string", "format": "date-time"},
+                    "expires_at":         {"type": "string", "format": "date-time", "description": "Absent when the resource has no expiry (e.g. paid-tier resources)."},
+                    "expires_in_seconds": {"type": "integer", "format": "int64"},
+                    "already_claimed":    {"type": "boolean", "description": "True when the resource has already been migrated to some account. Claiming again is idempotent for the current owner; a different user attempting to claim would get a 404."}
+                  }
+                }
+              }
+            }
+          },
+          "400": {"description": "Missing or malformed token query parameter."},
+          "404": {"description": "No resource with that token."},
+          "410": {"description": "Resource has expired or been deleted."}
+        }
+      }
+    },
     "/llms.txt": {
       "get": {
         "tags": ["meta"],

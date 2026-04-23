@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -215,6 +216,75 @@ func (s *server) handleDeleteResource(w http.ResponseWriter, r *http.Request) {
 
 type claimRequest struct {
 	Token string `json:"token"`
+}
+
+// handleClaimPreview exposes an unauthenticated, read-only view of a resource
+// so the /start?token=… landing page can render "this is a Postgres database
+// named X, expires in 23h" before the visitor commits to signing in. The
+// token itself is the capability — anyone holding it can already call POST
+// /api/me/claim, so revealing these non-secret fields does not widen the
+// attack surface. connection_url and owner identity are deliberately not
+// returned; those still require the claim roundtrip or an authenticated
+// session.
+func (s *server) handleClaimPreview(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	raw := strings.TrimSpace(r.URL.Query().Get("token"))
+	if raw == "" {
+		writeError(w, http.StatusBadRequest, "missing_token", "token query parameter is required.")
+		return
+	}
+	tokenUUID, perr := uuid.Parse(raw)
+	if perr != nil {
+		writeError(w, http.StatusBadRequest, "invalid_token", "token must be a UUID.")
+		return
+	}
+
+	var (
+		resourceType   string
+		name           string
+		tier           string
+		status         string
+		expiresAt      sql.NullTime
+		createdAt      time.Time
+		alreadyClaimed bool
+	)
+	err := s.db.QueryRowContext(ctx,
+		`SELECT resource_type, name, tier, status, expires_at, created_at,
+		        migrated_to_user_id IS NOT NULL AS already_claimed
+		 FROM resources WHERE token = $1`,
+		tokenUUID,
+	).Scan(&resourceType, &name, &tier, &status, &expiresAt, &createdAt, &alreadyClaimed)
+	if err != nil {
+		// sql.ErrNoRows and any other lookup error both collapse to 404 so
+		// we don't leak whether the token exists-but-is-broken vs. never-was.
+		writeError(w, http.StatusNotFound, "not_found", "No resource with that token.")
+		return
+	}
+	if status != "active" {
+		writeError(w, http.StatusGone, "resource_expired", "This resource has expired — provision a new one.")
+		return
+	}
+
+	payload := map[string]any{
+		"ok":              true,
+		"resource_type":   resourceType,
+		"name":            name,
+		"tier":            tier,
+		"status":          status,
+		"created_at":      createdAt.UTC().Format(time.RFC3339),
+		"already_claimed": alreadyClaimed,
+	}
+	if expiresAt.Valid {
+		payload["expires_at"] = expiresAt.Time.UTC().Format(time.RFC3339)
+		remaining := time.Until(expiresAt.Time)
+		if remaining < 0 {
+			remaining = 0
+		}
+		payload["expires_in_seconds"] = int64(remaining.Seconds())
+	}
+	writeJSON(w, http.StatusOK, payload)
 }
 
 func (s *server) handleClaimToken(w http.ResponseWriter, r *http.Request) {
