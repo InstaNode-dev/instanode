@@ -14,7 +14,6 @@ import (
 	"time"
 
 	_ "github.com/lib/pq"
-	razorpay "github.com/razorpay/razorpay-go"
 	"github.com/redis/go-redis/v9"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"go.opentelemetry.io/otel/attribute"
@@ -193,7 +192,7 @@ func main() {
 			return
 		}
 		start := time.Now()
-		client := razorpay.NewClient(cfg.Razorpay.KeyID, cfg.Razorpay.KeySecret)
+		client := newRazorpayClient(cfg.Razorpay)
 		// Call the simplest GET — /v1/subscriptions — with a small page to
 		// time just the HTTP + auth round-trip.
 		_, err := client.Subscription.All(map[string]interface{}{"count": 1}, nil)

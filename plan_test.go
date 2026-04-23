@@ -10,23 +10,23 @@ import (
 
 func TestPlanConfig_Monthly(t *testing.T) {
 	cfg := RazorpayConfig{PlanIDMonthly: "plan_M", PlanIDAnnual: "plan_A"}
-	pid, label, count, ok := planConfig("monthly", cfg)
-	if !ok || pid != "plan_M" || label != "Developer · Monthly" || count != 120 {
+	pid, label, count, ok := planConfig("monthly", "USD", cfg)
+	if !ok || pid != "plan_M" || label != "Developer · Monthly (USD)" || count != 120 {
 		t.Errorf("monthly: got (%q,%q,%d,%v)", pid, label, count, ok)
 	}
 }
 
 func TestPlanConfig_Annual(t *testing.T) {
 	cfg := RazorpayConfig{PlanIDMonthly: "plan_M", PlanIDAnnual: "plan_A"}
-	pid, label, count, ok := planConfig("annual", cfg)
-	if !ok || pid != "plan_A" || label != "Developer · Annual" || count != 10 {
+	pid, label, count, ok := planConfig("annual", "USD", cfg)
+	if !ok || pid != "plan_A" || label != "Developer · Annual (USD)" || count != 10 {
 		t.Errorf("annual: got (%q,%q,%d,%v)", pid, label, count, ok)
 	}
 }
 
 func TestPlanConfig_UnknownPlan(t *testing.T) {
 	for _, name := range []string{"", "weekly", "monthly ", "MONTHLY", "free", "pro"} {
-		_, _, _, ok := planConfig(name, RazorpayConfig{PlanIDMonthly: "x", PlanIDAnnual: "y"})
+		_, _, _, ok := planConfig(name, "USD", RazorpayConfig{PlanIDMonthly: "x", PlanIDAnnual: "y"})
 		if ok {
 			t.Errorf("planConfig(%q) should reject", name)
 		}
@@ -38,12 +38,200 @@ func TestPlanConfig_EmptyPlanIDsStillOK(t *testing.T) {
 	// ID isn't configured yet — handler checks planID=="" separately and
 	// 503s. The helper itself must still report ok=true so the caller can
 	// distinguish "invalid plan name" (400) from "config missing" (503).
-	pid, _, _, ok := planConfig("monthly", RazorpayConfig{})
+	pid, _, _, ok := planConfig("monthly", "USD", RazorpayConfig{})
 	if !ok {
 		t.Error("ok must stay true for a known plan even when ID is empty")
 	}
 	if pid != "" {
 		t.Errorf("empty PlanIDMonthly must pass through as empty, got %q", pid)
+	}
+}
+
+// ── planConfig currency matrix ─────────────────────────────────────────────
+//
+// The currency-specific plan ids must be selected when they're configured;
+// the legacy PlanIDMonthly / PlanIDAnnual remain USD fallbacks for deploys
+// that haven't rolled out the USD-specific env vars yet.
+
+func TestPlanConfig_USDMonthlyPicksUSDPlanID(t *testing.T) {
+	cfg := RazorpayConfig{
+		PlanIDMonthly:    "plan_legacy_M",
+		PlanIDUSDMonthly: "plan_usd_M",
+		PlanIDINRMonthly: "plan_inr_M",
+	}
+	pid, label, _, ok := planConfig("monthly", "USD", cfg)
+	if !ok || pid != "plan_usd_M" {
+		t.Errorf("USD monthly: got (%q,%v), want plan_usd_M", pid, ok)
+	}
+	if !strings.Contains(label, "(USD)") {
+		t.Errorf("USD monthly label = %q, want to include (USD)", label)
+	}
+}
+
+func TestPlanConfig_INRMonthlyPicksINRPlanID(t *testing.T) {
+	cfg := RazorpayConfig{
+		PlanIDMonthly:    "plan_legacy_M",
+		PlanIDUSDMonthly: "plan_usd_M",
+		PlanIDINRMonthly: "plan_inr_M",
+	}
+	pid, label, _, ok := planConfig("monthly", "INR", cfg)
+	if !ok || pid != "plan_inr_M" {
+		t.Errorf("INR monthly: got (%q,%v), want plan_inr_M", pid, ok)
+	}
+	if !strings.Contains(label, "(INR)") {
+		t.Errorf("INR monthly label = %q, want to include (INR)", label)
+	}
+}
+
+func TestPlanConfig_INRYearlyPicksINRPlanID(t *testing.T) {
+	cfg := RazorpayConfig{
+		PlanIDAnnual:    "plan_legacy_A",
+		PlanIDUSDYearly: "plan_usd_A",
+		PlanIDINRYearly: "plan_inr_A",
+	}
+	pid, _, count, ok := planConfig("annual", "INR", cfg)
+	if !ok || pid != "plan_inr_A" || count != 10 {
+		t.Errorf("INR annual: got (%q,%d,%v), want (plan_inr_A,10,true)", pid, count, ok)
+	}
+}
+
+func TestPlanConfig_INRMissingFallsBackToLegacyUSD(t *testing.T) {
+	// A deploy with no INR ids configured must not silently produce an empty
+	// plan id — the fallback to the legacy USD field lets the server stay
+	// online (callers see USD pricing at checkout, which is the correct
+	// degraded behaviour given there's no INR plan yet).
+	cfg := RazorpayConfig{PlanIDMonthly: "plan_legacy_M", PlanIDAnnual: "plan_legacy_A"}
+	pid, _, _, _ := planConfig("monthly", "INR", cfg)
+	if pid != "plan_legacy_M" {
+		t.Errorf("INR monthly with no INR id = %q, want fallback plan_legacy_M", pid)
+	}
+	pid2, _, _, _ := planConfig("annual", "INR", cfg)
+	if pid2 != "plan_legacy_A" {
+		t.Errorf("INR annual with no INR id = %q, want fallback plan_legacy_A", pid2)
+	}
+}
+
+func TestPlanConfig_USDMissingFallsBackToLegacy(t *testing.T) {
+	cfg := RazorpayConfig{PlanIDMonthly: "plan_legacy_M", PlanIDAnnual: "plan_legacy_A"}
+	pid, _, _, _ := planConfig("monthly", "USD", cfg)
+	if pid != "plan_legacy_M" {
+		t.Errorf("USD monthly with no USD id = %q, want fallback plan_legacy_M", pid)
+	}
+}
+
+func TestPlanConfig_UnknownCurrencyCoercesToUSD(t *testing.T) {
+	// A caller that forgets to normalize currency (e.g. "EUR") must land on
+	// USD — never crash and never pick INR. Guard by only setting the USD
+	// plan id; if "EUR" leaked through and hit INR lookup, pid would be
+	// empty (not plan_usd_M).
+	cfg := RazorpayConfig{PlanIDUSDMonthly: "plan_usd_M"}
+	for _, cur := range []string{"", "EUR", "GBP", "xxx", "   "} {
+		pid, label, _, ok := planConfig("monthly", cur, cfg)
+		if !ok || pid != "plan_usd_M" {
+			t.Errorf("currency %q: got (%q,%v), want plan_usd_M", cur, pid, ok)
+		}
+		if !strings.Contains(label, "(USD)") {
+			t.Errorf("currency %q: label %q should collapse to (USD)", cur, label)
+		}
+	}
+}
+
+// ── normalizeCurrency / isSupportedCurrency ────────────────────────────────
+
+func TestNormalizeCurrency(t *testing.T) {
+	tests := map[string]string{
+		"":        "USD",
+		"USD":     "USD",
+		"usd":     "USD",
+		" INR ":   "INR",
+		"inr":     "INR",
+		"EUR":     "USD", // unknown → USD by design
+		"gbp":     "USD",
+		"nonsense": "USD",
+	}
+	for in, want := range tests {
+		if got := normalizeCurrency(in); got != want {
+			t.Errorf("normalizeCurrency(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestIsSupportedCurrency(t *testing.T) {
+	for _, ok := range []string{"USD", "usd", "INR", "inr", " USD ", " INR "} {
+		if !isSupportedCurrency(ok) {
+			t.Errorf("%q should be supported", ok)
+		}
+	}
+	for _, nope := range []string{"", "EUR", "GBP", "xxx", "   ", "USDT"} {
+		if isSupportedCurrency(nope) {
+			t.Errorf("%q should be rejected", nope)
+		}
+	}
+}
+
+// ── planPriceLabels ────────────────────────────────────────────────────────
+
+func TestPlanPriceLabels_USD(t *testing.T) {
+	m, a := planPriceLabels("USD")
+	if !strings.Contains(m, "$12/mo") || !strings.Contains(a, "$120/yr") {
+		t.Errorf("USD labels = (%q,%q), want $12/mo + $120/yr", m, a)
+	}
+}
+
+func TestPlanPriceLabels_INR(t *testing.T) {
+	m, a := planPriceLabels("INR")
+	if !strings.Contains(m, "₹200/mo") || !strings.Contains(a, "₹2,199/yr") {
+		t.Errorf("INR labels = (%q,%q), want ₹200/mo + ₹2,199/yr", m, a)
+	}
+}
+
+func TestPlanPriceLabels_LegacyFallsBackToUSD(t *testing.T) {
+	// Users whose plan_currency column is still NULL (pre-dual-currency
+	// subscribers) must see the USD strings, not a blank or INR label.
+	m, a := planPriceLabels("")
+	if !strings.Contains(m, "$12") || !strings.Contains(a, "$120") {
+		t.Errorf("empty currency = (%q,%q), want USD fallback", m, a)
+	}
+}
+
+// ── buildHumanPlanLabel with INR plan_currency ────────────────────────────
+
+func TestBuildHumanPlanLabel_INRMonthly(t *testing.T) {
+	cur := "INR"
+	u := &User{PlanTier: "paid", PlanPeriod: "monthly", PlanCurrency: &cur}
+	got := buildHumanPlanLabel(u)
+	if !strings.Contains(got, "₹200/mo") {
+		t.Errorf("INR monthly label = %q, want to contain ₹200/mo", got)
+	}
+	if strings.Contains(got, "$12") {
+		t.Errorf("INR label must not leak USD pricing: %q", got)
+	}
+}
+
+func TestBuildHumanPlanLabel_INRAnnual(t *testing.T) {
+	cur := "INR"
+	u := &User{PlanTier: "paid", PlanPeriod: "annual", PlanCurrency: &cur}
+	got := buildHumanPlanLabel(u)
+	if !strings.Contains(got, "₹2,199/yr") {
+		t.Errorf("INR annual label = %q, want to contain ₹2,199/yr", got)
+	}
+}
+
+func TestBuildHumanPlanLabel_INRSwitching(t *testing.T) {
+	cur := "INR"
+	target := "annual"
+	u := &User{
+		PlanTier:          "paid",
+		PlanPeriod:        "monthly",
+		PlanCurrency:      &cur,
+		PendingPlanChange: &target,
+	}
+	got := buildHumanPlanLabel(u)
+	if !strings.Contains(got, "switching to") || !strings.Contains(got, "₹2,199/yr") {
+		t.Errorf("INR switching label = %q, want INR target price", got)
+	}
+	if strings.Contains(got, "$") {
+		t.Errorf("INR switching label must not leak USD: %q", got)
 	}
 }
 

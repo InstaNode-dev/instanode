@@ -85,6 +85,7 @@ func (s *server) handleGetPlan(w http.ResponseWriter, r *http.Request) {
 		"subscription_status":      user.SubscriptionStatus,
 		"current_period_end":       user.CurrentPeriodEnd,
 		"razorpay_subscription_id": user.RazorpaySubscriptionID,
+		"plan_currency":            user.PlanCurrency,
 		"human_label":              humanLabel,
 		"available_upgrades":       upgrades,
 	}
@@ -325,9 +326,17 @@ func buildHumanPlanLabel(user *User) string {
 	if user.PlanTier != "paid" {
 		return "Free tier — resources expire in 24h"
 	}
-	periodLabel := "Monthly · $12/mo"
+	// plan_currency drives the price shown in the label. NULL (legacy subs
+	// that pre-date dual-currency) falls through to USD via the default
+	// branch in planPriceLabels.
+	currency := ""
+	if user.PlanCurrency != nil {
+		currency = *user.PlanCurrency
+	}
+	monthlyLabel, annualLabel := planPriceLabels(currency)
+	periodLabel := monthlyLabel
 	if user.PlanPeriod == "annual" {
-		periodLabel = "Annual · $120/yr"
+		periodLabel = annualLabel
 	}
 	subStatus := ""
 	if user.SubscriptionStatus != nil {
@@ -343,13 +352,24 @@ func buildHumanPlanLabel(user *User) string {
 		return label
 	}
 	if user.PendingPlanChange != nil && *user.PendingPlanChange != "" {
-		target := "Annual · $120/yr"
+		target := annualLabel
 		if *user.PendingPlanChange == "monthly" {
-			target = "Monthly · $12/mo"
+			target = monthlyLabel
 		}
 		label = "Developer · " + periodLabel + " · switching to " + target
 	}
 	return label
+}
+
+// planPriceLabels returns the monthly and annual price strings for a given
+// currency. INR uses the $200/₹2,199 pricing tier; USD (and any unknown
+// currency, for legacy-row safety) uses $12/$120.
+func planPriceLabels(currency string) (monthly, annual string) {
+	switch normalizeCurrency(currency) {
+	case "INR":
+		return "Monthly · ₹200/mo", "Annual · ₹2,199/yr"
+	}
+	return "Monthly · $12/mo", "Annual · $120/yr"
 }
 
 // buildAvailableUpgrades returns the list of upgrade paths relevant to the
