@@ -89,50 +89,40 @@ func (s *server) handleCreateSubscription(w http.ResponseWriter, r *http.Request
 		}
 	}
 
-	// Razorpay SDK call with timing checkpoints so we can distinguish
-	// "SDK never returned" vs "Razorpay responded slowly" vs "outbound
-	// blocked at the container level" in production logs.
+	// Payment provider call with timing checkpoints so we can distinguish
+	// "SDK never returned" vs "provider responded slowly" vs "outbound
+	// blocked at the container level" in production logs. The Payment
+	// impl runs the SDK in a goroutine and selects on ctx.Done so the
+	// 15s bound below actually lands on the wire.
 	callStart := time.Now()
-	slog.InfoContext(r.Context(), "razorpay subscription create: starting",
+	slog.InfoContext(r.Context(), "payment subscription create: starting",
 		"user_id", user.ID, "plan", req.Plan, "plan_id", planID)
 
-	type subResult struct {
-		data map[string]interface{}
-		err  error
-	}
-	resCh := make(chan subResult, 1)
-	go func() {
-		client := newRazorpayClient(s.cfg.Razorpay)
-		data, err := client.Subscription.Create(map[string]interface{}{
-			"plan_id":         planID,
-			"total_count":     totalCount,
-			"customer_notify": 1,
-			"notes":           notes,
-		}, nil)
-		resCh <- subResult{data: data, err: err}
-	}()
-
-	var sub map[string]interface{}
-	select {
-	case res := <-resCh:
-		elapsed := time.Since(callStart)
-		if res.err != nil {
-			slog.ErrorContext(r.Context(), "razorpay subscription create failed",
-				"error", res.err, "user_id", user.ID, "plan", req.Plan, "elapsed_ms", elapsed.Milliseconds())
-			writeError(w, http.StatusBadGateway, "payment_gateway_error",
-				"Payment provider returned an error — please try again in a moment. If the problem persists, contact support.")
+	subCtx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+	sub, err := s.payment.CreateSubscription(subCtx, map[string]interface{}{
+		"plan_id":         planID,
+		"total_count":     totalCount,
+		"customer_notify": 1,
+		"notes":           notes,
+	})
+	elapsed := time.Since(callStart)
+	if err != nil {
+		if subCtx.Err() == context.DeadlineExceeded {
+			slog.ErrorContext(r.Context(), "payment subscription create timeout",
+				"user_id", user.ID, "plan", req.Plan, "elapsed_ms", elapsed.Milliseconds())
+			writeError(w, http.StatusGatewayTimeout, "payment_gateway_timeout",
+				"Payment provider took too long to respond. Please retry in a few seconds.")
 			return
 		}
-		slog.InfoContext(r.Context(), "razorpay subscription create: ok",
-			"user_id", user.ID, "plan", req.Plan, "elapsed_ms", elapsed.Milliseconds())
-		sub = res.data
-	case <-time.After(15 * time.Second):
-		slog.ErrorContext(r.Context(), "razorpay subscription create timeout",
-			"user_id", user.ID, "plan", req.Plan, "elapsed_ms", time.Since(callStart).Milliseconds())
-		writeError(w, http.StatusGatewayTimeout, "payment_gateway_timeout",
-			"Payment provider took too long to respond. Please retry in a few seconds.")
+		slog.ErrorContext(r.Context(), "payment subscription create failed",
+			"error", err, "user_id", user.ID, "plan", req.Plan, "elapsed_ms", elapsed.Milliseconds())
+		writeError(w, http.StatusBadGateway, "payment_gateway_error",
+			"Payment provider returned an error — please try again in a moment. If the problem persists, contact support.")
 		return
 	}
+	slog.InfoContext(r.Context(), "payment subscription create: ok",
+		"user_id", user.ID, "plan", req.Plan, "elapsed_ms", elapsed.Milliseconds())
 
 	subID, _ := sub["id"].(string)
 	shortURL, _ := sub["short_url"].(string)

@@ -20,12 +20,15 @@ import (
 // regression in the signature logic before any deploy.
 
 // whsrv builds a minimal *server with just enough config for the webhook
-// handler to run — no DB, no email, no redis.
+// handler to run — no DB, no email, no redis. A real razorpayPayment is
+// injected so signature verification runs against the test secret.
 func whsrv(secret string) *server {
+	cfg := &Config{
+		Razorpay: RazorpayConfig{WebhookSecret: secret},
+	}
 	return &server{
-		cfg: &Config{
-			Razorpay: RazorpayConfig{WebhookSecret: secret},
-		},
+		cfg:     cfg,
+		payment: newRazorpayPayment(cfg.Razorpay),
 	}
 }
 

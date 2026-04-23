@@ -1,9 +1,11 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -44,9 +46,13 @@ var planPricing = map[string]map[string]int{
 
 func (s *server) handleCreateOrder(w http.ResponseWriter, r *http.Request) {
 	// Note: no direct platform-PG calls here; authUser handles its own 5s
-	// timeout internally. The only external call is client.Order.Create
-	// below, which the Razorpay Go SDK runs without context support — see
-	// comment at that call site.
+	// timeout internally. The only external call is s.payment.CreateOrder
+	// below, which runs the SDK call in a goroutine so ctx cancellation
+	// can unblock us even when the underlying SDK blocks indefinitely.
+	if !s.payment.Configured() {
+		writeError(w, http.StatusServiceUnavailable, "payment_not_configured", "Billing is not configured on this deployment.")
+		return
+	}
 	user := s.authUser(r)
 	if user == nil {
 		writeError(w, http.StatusUnauthorized, "unauthorized", "Sign in required.")
@@ -74,8 +80,6 @@ func (s *server) handleCreateOrder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	client := newRazorpayClient(s.cfg.Razorpay)
-
 	notes := map[string]interface{}{
 		"user_id": user.ID.String(),
 		"plan_id": req.PlanID,
@@ -94,12 +98,12 @@ func (s *server) handleCreateOrder(w http.ResponseWriter, r *http.Request) {
 		"notes":           notes,
 	}
 
-	// LIMITATION: the Razorpay Go SDK does not accept a context.Context here,
-	// so we cannot enforce our 5s request budget on this call. It will stall
-	// up to Razorpay's own SDK-internal HTTP timeout (currently unbounded in
-	// razorpay-go). If this becomes a production hang risk, wrap with a
-	// channel + time.After pattern and abandon the goroutine on timeout.
-	order, err := client.Order.Create(data, nil)
+	// Bound the provider call to 15s — beyond that the user's browser has
+	// given up anyway. The Payment impl runs the SDK in a goroutine and
+	// selects on ctx.Done so this timeout actually lands on the wire.
+	orderCtx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+	order, err := s.payment.CreateOrder(orderCtx, data)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "razorpay order create failed", "error", err, "user_id", user.ID, "plan", req.PlanID, "currency", req.Currency)
 		writeError(w, http.StatusBadGateway, "payment_gateway_error", "Payment provider is unavailable — please try again in a moment.")

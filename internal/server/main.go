@@ -31,10 +31,11 @@ type server struct {
 	rdb          *redis.Client // Valkey (rate limits, webhook storage, and where
 	                           // per-tenant ACL users are provisioned)
 	cfg          *Config
-	baseURL      string // API host, e.g. https://api.example.com — served by this binary
-	marketingURL string // public website host, e.g. https://example.com — served elsewhere
-	custDBURL    string // customer Postgres (where we CREATE DATABASE)
+	baseURL      string  // API host, e.g. https://api.example.com — served by this binary
+	marketingURL string  // public website host, e.g. https://example.com — served elsewhere
+	custDBURL    string  // customer Postgres (where we CREATE DATABASE)
 	email        *emailer
+	payment      Payment // billing provider (Razorpay in prod, no-op when unconfigured)
 }
 
 // Run boots the instant-lite server: loads config, initializes
@@ -101,6 +102,15 @@ func Run() {
 		slog.Warn("redis unreachable — rate limiting and webhooks will be degraded", "error", err)
 	}
 
+	var payment Payment
+	if cfg.Razorpay.KeyID != "" && cfg.Razorpay.KeySecret != "" {
+		payment = newRazorpayPayment(cfg.Razorpay)
+		slog.Info("payment: razorpay provider active")
+	} else {
+		payment = noopPayment{}
+		slog.Warn("payment: provider not configured, billing endpoints will return 503")
+	}
+
 	s := &server{
 		db:           db,
 		rdb:          rdb,
@@ -109,6 +119,7 @@ func Run() {
 		marketingURL: cfg.Server.MarketingURL,
 		custDBURL:    cfg.Database.CustomerURL,
 		email:        newEmailer(cfg.Email),
+		payment:      payment,
 	}
 
 	// Start the expired resource reaper.
@@ -196,22 +207,20 @@ func Run() {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "service": "instant-lite"})
 	})
 
-	// Temporary egress diagnostic: GET /debug/razorpay-ping returns how long
-	// Razorpay's /v1/subscriptions takes from inside the container. Gate:
-	// requires ?token=<JWT_SECRET> so only the operator can hit it.
-	mux.HandleFunc("GET /debug/razorpay-ping", func(w http.ResponseWriter, r *http.Request) {
-		// Gate on the Brevo inbound secret (already SECRET in DO env, known
-		// to operator) so this diagnostic endpoint can be hit from anywhere.
+	// Temporary egress diagnostic: GET /debug/payment-ping returns how long
+	// a list-subscriptions call takes from inside the container, useful for
+	// diagnosing container-level network stalls. Gated on the Brevo inbound
+	// secret (already SECRET in env, known to the operator).
+	mux.HandleFunc("GET /debug/payment-ping", func(w http.ResponseWriter, r *http.Request) {
 		expected := cfg.Email.BrevoInboundSecret
 		if expected == "" || r.URL.Query().Get("token") != expected {
 			writeError(w, http.StatusUnauthorized, "unauthorized", "debug endpoint — token required")
 			return
 		}
 		start := time.Now()
-		client := newRazorpayClient(cfg.Razorpay)
-		// Call the simplest GET — /v1/subscriptions — with a small page to
-		// time just the HTTP + auth round-trip.
-		_, err := client.Subscription.All(map[string]interface{}{"count": 1}, nil)
+		pingCtx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+		defer cancel()
+		_, err := s.payment.ListSubscriptions(pingCtx, map[string]interface{}{"count": 1})
 		elapsed := time.Since(start)
 		if err != nil {
 			writeJSON(w, http.StatusOK, map[string]any{"ok": false, "elapsed_ms": elapsed.Milliseconds(), "error": err.Error()})

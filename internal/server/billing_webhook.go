@@ -29,8 +29,7 @@ func (s *server) handleRazorpayWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 
 	signature := r.Header.Get("X-Razorpay-Signature")
-	expectedSignature := s.computeSignature(string(body), s.cfg.Razorpay.WebhookSecret)
-	if !hmac.Equal([]byte(signature), []byte(expectedSignature)) {
+	if !s.payment.VerifyWebhookSignature(body, signature) {
 		slog.WarnContext(r.Context(), "razorpay webhook: signature mismatch")
 		writeError(w, http.StatusUnauthorized, "invalid_signature", "Signature verification failed.")
 		return
@@ -171,8 +170,7 @@ func (s *server) handlePaymentCaptured(ctx context.Context, entity map[string]in
 			slog.Error("payment.captured missing order_id and unresolvable subscription_id", "payment_id", paymentID)
 			return
 		}
-		client := newRazorpayClient(s.cfg.Razorpay)
-		order, err := client.Order.Fetch(orderID, nil, nil)
+		order, err := s.payment.FetchOrder(ctx, orderID)
 		if err != nil {
 			slog.Error("razorpay order fetch failed", "error", err, "order_id", orderID, "payment_id", paymentID)
 			return
@@ -256,8 +254,7 @@ func (s *server) handlePaymentCaptured(ctx context.Context, entity map[string]in
 			// fallback path. (Kept this comment so future readers don't move it.)
 		}
 		// handleLegacyNotesTokenClaim is inlined so we keep notes in scope:
-		client := newRazorpayClient(s.cfg.Razorpay)
-		order, err := client.Order.Fetch(orderID, nil, nil)
+		order, err := s.payment.FetchOrder(ctx, orderID)
 		if err == nil {
 			if n, ok := order["notes"].(map[string]interface{}); ok {
 				if tokenStr, _ := n["token"].(string); tokenStr != "" {
@@ -303,6 +300,9 @@ func (s *server) handlePaymentCaptured(ctx context.Context, entity map[string]in
 	sendReceiptIfUnsent(ctx, s.db, s.email, userID, amountCents, currency)
 }
 
+// computeSignature is retained for tests that sign fixture webhook bodies
+// to exercise the verification path. Production code calls
+// s.payment.VerifyWebhookSignature — don't reach for this in handlers.
 func (s *server) computeSignature(payload, secret string) string {
 	h := hmac.New(sha256.New, []byte(secret))
 	h.Write([]byte(payload))
@@ -316,8 +316,7 @@ func (s *server) notifyPaymentFailed(ctx context.Context, orderID, reason string
 	if orderID == "" {
 		return
 	}
-	client := newRazorpayClient(s.cfg.Razorpay)
-	order, err := client.Order.Fetch(orderID, nil, nil)
+	order, err := s.payment.FetchOrder(ctx, orderID)
 	if err != nil {
 		slog.Warn("payment_failed email: order fetch failed", "error", err, "order_id", orderID)
 		return
