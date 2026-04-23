@@ -65,14 +65,18 @@ func (s *server) handleNewDB(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Authenticated paid users skip the per-fingerprint anon cap and get
-	// permanent resources linked to their account automatically. Accepts
-	// session cookie (from the browser) or Authorization: Bearer <JWT>
-	// (from CLI / agents).
-	paidUser := s.authUser(r)
-	isPaid := paidUser != nil && paidUser.PlanTier == "paid"
+	// Authenticated callers skip the per-fingerprint anon cap — the cap is
+	// anti-abuse for unauthenticated traffic, and once a user has signed in
+	// we know who they are and can tie resources to them. Accepts session
+	// cookie (from the browser) or Authorization: Bearer <JWT> (from CLI /
+	// agents). isPaid gates paid-tier perks (permanent resources, higher
+	// quotas); authed free users still get ownership but with anon-tier
+	// limits + TTL.
+	authedUser := s.authUser(r)
+	isAuthed := authedUser != nil
+	isPaid := isAuthed && authedUser.PlanTier == "paid"
 
-	if !isPaid {
+	if !isAuthed {
 		exceeded, existing := s.checkLimitAndIncrement(ctx, fp, "postgres")
 		if exceeded {
 			if existing != nil {
@@ -83,11 +87,11 @@ func (s *server) handleNewDB(w http.ResponseWriter, r *http.Request) {
 					"connection_url": existing.connectionURL,
 					"tier":           "anonymous",
 					"limits":         map[string]any{"storage_mb": s.cfg.Postgres.StorageMB, "connections": s.cfg.Postgres.ConnLimit, "expires_in": s.cfg.Limits.AnonTTL},
-					"note":           fmt.Sprintf("Returning your existing database. Keep it forever: %s/start?token=%s", s.baseURL, existing.token),
+					"note":           fmt.Sprintf("Returning your existing database. Keep it forever: %s/start?token=%s", s.marketingURL, existing.token),
 				})
 			} else {
 				writeJSON(w, http.StatusTooManyRequests, map[string]any{
-					"ok": false, "error": "rate_limited", "message": fmt.Sprintf("Daily provision limit reached (%d/day). Keep resources forever: %s/start", s.cfg.Limits.MaxProvisionsPerDay, s.baseURL),
+					"ok": false, "error": "rate_limited", "message": fmt.Sprintf("Daily provision limit reached (%d/day). Keep resources forever: %s/start", s.cfg.Limits.MaxProvisionsPerDay, s.marketingURL),
 				})
 			}
 			return
@@ -120,11 +124,20 @@ func (s *server) handleNewDB(w http.ResponseWriter, r *http.Request) {
 	}
 
 	id := uuid.New()
+	// Three ownership shapes:
+	//  - anonymous (no auth): no user link, 24h TTL
+	//  - authed free: user link, 24h TTL (ownership but anon limits)
+	//  - authed paid: user link, no TTL, paid-tier limits
 	if isPaid {
 		_, err = s.db.ExecContext(ctx,
 			`INSERT INTO resources (id, token, resource_type, name, tier, fingerprint, connection_url, expires_at, migrated_to_user_id)
 			 VALUES ($1, $2, 'postgres', $3, 'paid', $4, $5, NULL, $6)`,
-			id, token, name, fp, connURL, paidUser.ID)
+			id, token, name, fp, connURL, authedUser.ID)
+	} else if isAuthed {
+		_, err = s.db.ExecContext(ctx,
+			`INSERT INTO resources (id, token, resource_type, name, tier, fingerprint, connection_url, expires_at, migrated_to_user_id)
+			 VALUES ($1, $2, 'postgres', $3, 'anonymous', $4, $5, $6, $7)`,
+			id, token, name, fp, connURL, expiresAt, authedUser.ID)
 	} else {
 		_, err = s.db.ExecContext(ctx,
 			`INSERT INTO resources (id, token, resource_type, name, tier, fingerprint, connection_url, expires_at)
@@ -166,11 +179,18 @@ func (s *server) handleNewDB(w http.ResponseWriter, r *http.Request) {
 		"limits":         map[string]any{"storage_mb": s.cfg.Postgres.StorageMB, "connections": s.cfg.Postgres.ConnLimit},
 	}
 	if isPaid {
-		resp["note"] = "Permanent database (Developer tier). Manage it at " + s.baseURL + "/dashboard.html"
+		resp["note"] = "Permanent database (Developer tier). Manage it at " + s.marketingURL + "/dashboard.html"
+	} else if isAuthed {
+		// Authed free tier: owned but still on anon limits + TTL. Surface the
+		// upgrade path rather than the "claim" path (they're already signed
+		// in, nothing to claim).
+		resp["expires_at"] = expiresAt
+		resp["limits"].(map[string]any)["expires_in"] = s.cfg.Limits.AnonTTL
+		resp["note"] = fmt.Sprintf("Anonymous-tier database (24h TTL). Upgrade to keep it forever: %s/pricing.html", s.marketingURL)
 	} else {
 		resp["expires_at"] = expiresAt
 		resp["limits"].(map[string]any)["expires_in"] = s.cfg.Limits.AnonTTL
-		resp["note"] = fmt.Sprintf("Works now. Keep it forever (free 14-day trial): %s/start?token=%s", s.baseURL, token.String())
+		resp["note"] = fmt.Sprintf("Works now. Keep it forever (free 14-day trial): %s/start?token=%s", s.marketingURL, token.String())
 	}
 	writeJSON(w, http.StatusCreated, resp)
 }
@@ -192,10 +212,13 @@ func (s *server) handleNewWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	paidUser := s.authUser(r)
-	isPaid := paidUser != nil && paidUser.PlanTier == "paid"
+	// See handleNewDB for the auth/isPaid/isAuthed contract — same three
+	// ownership shapes apply here.
+	authedUser := s.authUser(r)
+	isAuthed := authedUser != nil
+	isPaid := isAuthed && authedUser.PlanTier == "paid"
 
-	if !isPaid {
+	if !isAuthed {
 		exceeded, existing := s.checkLimitAndIncrement(ctx, fp, "webhook")
 		if exceeded {
 			if existing != nil {
@@ -206,11 +229,11 @@ func (s *server) handleNewWebhook(w http.ResponseWriter, r *http.Request) {
 					"receive_url": existing.connectionURL,
 					"tier":        "anonymous",
 					"limits":      map[string]any{"requests_stored": s.cfg.Limits.WebhookMaxStored, "expires_in": s.cfg.Limits.AnonTTL},
-					"note":        "Returning your existing webhook. Keep it forever: " + s.baseURL + "/start",
+					"note":        "Returning your existing webhook. Keep it forever: " + s.marketingURL + "/start",
 				})
 			} else {
 				writeJSON(w, http.StatusTooManyRequests, map[string]any{
-					"ok": false, "error": "rate_limited", "message": fmt.Sprintf("Daily provision limit reached (%d/day). Keep resources forever: %s/start", s.cfg.Limits.MaxProvisionsPerDay, s.baseURL),
+					"ok": false, "error": "rate_limited", "message": fmt.Sprintf("Daily provision limit reached (%d/day). Keep resources forever: %s/start", s.cfg.Limits.MaxProvisionsPerDay, s.marketingURL),
 				})
 			}
 			return
@@ -237,7 +260,12 @@ func (s *server) handleNewWebhook(w http.ResponseWriter, r *http.Request) {
 		_, err = s.db.ExecContext(ctx,
 			`INSERT INTO resources (id, token, resource_type, name, tier, fingerprint, connection_url, expires_at, migrated_to_user_id)
 			 VALUES ($1, $2, 'webhook', $3, 'paid', $4, $5, NULL, $6)`,
-			id, token, name, fp, receiveURL, paidUser.ID)
+			id, token, name, fp, receiveURL, authedUser.ID)
+	} else if isAuthed {
+		_, err = s.db.ExecContext(ctx,
+			`INSERT INTO resources (id, token, resource_type, name, tier, fingerprint, connection_url, expires_at, migrated_to_user_id)
+			 VALUES ($1, $2, 'webhook', $3, 'anonymous', $4, $5, $6, $7)`,
+			id, token, name, fp, receiveURL, expiresAt, authedUser.ID)
 	} else {
 		_, err = s.db.ExecContext(ctx,
 			`INSERT INTO resources (id, token, resource_type, name, tier, fingerprint, connection_url, expires_at)
