@@ -51,6 +51,12 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS pending_plan_sub_id        TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS plan_switch_scheduled_email_sent_at TIMESTAMPTZ;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS plan_switch_activated_email_sent_at TIMESTAMPTZ;
 
+-- Currency lock-in. Set when the user first subscribes and thereafter
+-- determines which Razorpay plan id pool (USD vs INR) they can switch
+-- within. NULL for free users; populated at subscription.charged time from
+-- notes.currency. VARCHAR(3) is the ISO 4217 shape (USD, INR, ...).
+ALTER TABLE users ADD COLUMN IF NOT EXISTS plan_currency VARCHAR(3);
+
 CREATE TABLE IF NOT EXISTS resources (
     id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     token           UUID NOT NULL UNIQUE DEFAULT uuid_generate_v4(),

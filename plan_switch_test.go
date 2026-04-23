@@ -430,7 +430,7 @@ func TestPromotePendingPlanSwitches_FeatureOffIsNoOp(t *testing.T) {
 		cancelCalled = true
 		return nil
 	})
-	createStub := razorpaySubCreator(func(_ context.Context, _ RazorpayConfig, _ string, _ uuid.UUID) (string, error) {
+	createStub := razorpaySubCreator(func(_ context.Context, _ RazorpayConfig, _ string, _ string, _ uuid.UUID) (string, error) {
 		createCalled = true
 		return "sub_new_stub", nil
 	})

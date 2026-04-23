@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/razorpay/razorpay-go"
 )
 
 type CreateOrderRequest struct {
@@ -82,7 +81,7 @@ func (s *server) handleCreateOrder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	client := razorpay.NewClient(s.cfg.Razorpay.KeyID, s.cfg.Razorpay.KeySecret)
+	client := newRazorpayClient(s.cfg.Razorpay)
 
 	notes := map[string]interface{}{
 		"user_id": user.ID.String(),
@@ -285,7 +284,7 @@ func (s *server) handlePaymentCaptured(ctx context.Context, entity map[string]in
 			slog.Error("payment.captured missing order_id and unresolvable subscription_id", "payment_id", paymentID)
 			return
 		}
-		client := razorpay.NewClient(s.cfg.Razorpay.KeyID, s.cfg.Razorpay.KeySecret)
+		client := newRazorpayClient(s.cfg.Razorpay)
 		order, err := client.Order.Fetch(orderID, nil, nil)
 		if err != nil {
 			slog.Error("razorpay order fetch failed", "error", err, "order_id", orderID, "payment_id", paymentID)
@@ -370,7 +369,7 @@ func (s *server) handlePaymentCaptured(ctx context.Context, entity map[string]in
 			// fallback path. (Kept this comment so future readers don't move it.)
 		}
 		// handleLegacyNotesTokenClaim is inlined so we keep notes in scope:
-		client := razorpay.NewClient(s.cfg.Razorpay.KeyID, s.cfg.Razorpay.KeySecret)
+		client := newRazorpayClient(s.cfg.Razorpay)
 		order, err := client.Order.Fetch(orderID, nil, nil)
 		if err == nil {
 			if n, ok := order["notes"].(map[string]interface{}); ok {
@@ -430,7 +429,7 @@ func (s *server) notifyPaymentFailed(ctx context.Context, orderID, reason string
 	if orderID == "" {
 		return
 	}
-	client := razorpay.NewClient(s.cfg.Razorpay.KeyID, s.cfg.Razorpay.KeySecret)
+	client := newRazorpayClient(s.cfg.Razorpay)
 	order, err := client.Order.Fetch(orderID, nil, nil)
 	if err != nil {
 		slog.Warn("payment_failed email: order fetch failed", "error", err, "order_id", orderID)
@@ -456,8 +455,9 @@ func (s *server) notifyPaymentFailed(ctx context.Context, orderID, reason string
 // ── Subscriptions (recurring billing) ───────────────────────────────────────
 
 type CreateSubscriptionRequest struct {
-	Plan  string `json:"plan"`            // "monthly" | "annual"
-	Token string `json:"token,omitempty"` // optional anon resource token to claim on first charge
+	Plan     string `json:"plan"`               // "monthly" | "annual"
+	Currency string `json:"currency,omitempty"` // "USD" | "INR" — empty ⇒ USD
+	Token    string `json:"token,omitempty"`    // optional anon resource token to claim on first charge
 }
 
 type CreateSubscriptionResponse struct {
@@ -484,6 +484,13 @@ func (s *server) handleCreateSubscription(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	// Reject unknown currencies up-front. Empty is allowed (falls back to USD).
+	if req.Currency != "" && !isSupportedCurrency(req.Currency) {
+		writeError(w, http.StatusBadRequest, "invalid_currency", "currency must be 'USD' or 'INR'.")
+		return
+	}
+	currency := normalizeCurrency(req.Currency)
+
 	// Block double-subscribe: if the user has an active / pending subscription
 	// already, point them at cancel-then-resubscribe rather than silently
 	// creating a second one. Only when the prior sub is cancelled/completed/
@@ -494,7 +501,18 @@ func (s *server) handleCreateSubscription(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	planID, planLabel, totalCount, ok := planConfig(req.Plan, s.cfg.Razorpay)
+	// Currency lock-in: if the user already has a paid plan_currency (from a
+	// prior subscription cycle, even one that's since been cancelled), a new
+	// subscribe must stay in the same currency. Mixing is rejected — not to
+	// punish the user but because Razorpay plan ids are bound to a single
+	// currency and a USD subscriber's saved card likely can't charge INR.
+	if user.PlanCurrency != nil && *user.PlanCurrency != "" && *user.PlanCurrency != currency {
+		writeError(w, http.StatusBadRequest, "cannot_change_currency",
+			"Your account is already on a "+*user.PlanCurrency+" plan. Changing currency is not supported — contact support if you need to.")
+		return
+	}
+
+	planID, planLabel, totalCount, ok := planConfig(req.Plan, currency, s.cfg.Razorpay)
 	if !ok {
 		writeError(w, http.StatusBadRequest, "invalid_plan", "plan must be 'monthly' or 'annual'.")
 		return
@@ -504,7 +522,11 @@ func (s *server) handleCreateSubscription(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	notes := map[string]interface{}{"user_id": user.ID.String(), "plan": req.Plan}
+	notes := map[string]interface{}{
+		"user_id":  user.ID.String(),
+		"plan":     req.Plan,
+		"currency": currency,
+	}
 	if req.Token != "" {
 		if _, err := uuid.Parse(req.Token); err == nil {
 			notes["token"] = req.Token
@@ -524,7 +546,7 @@ func (s *server) handleCreateSubscription(w http.ResponseWriter, r *http.Request
 	}
 	resCh := make(chan subResult, 1)
 	go func() {
-		client := razorpay.NewClient(s.cfg.Razorpay.KeyID, s.cfg.Razorpay.KeySecret)
+		client := newRazorpayClient(s.cfg.Razorpay)
 		data, err := client.Subscription.Create(map[string]interface{}{
 			"plan_id":         planID,
 			"total_count":     totalCount,
@@ -564,14 +586,18 @@ func (s *server) handleCreateSubscription(w http.ResponseWriter, r *http.Request
 	// Clear cancel_email_sent_at when a new subscription attaches so a later
 	// cancel on this fresh sub still triggers a cancellation email (the claim
 	// lock is per-sub-lifecycle, not lifetime).
+	// plan_currency uses COALESCE so the first subscription locks in the
+	// currency, and later re-subscribes (after a cancel) can't flip it —
+	// defence in depth behind the explicit check above.
 	if _, err := s.db.ExecContext(ctx,
 		`UPDATE users
 		    SET razorpay_subscription_id = $1,
-		        subscription_status = 'created',
-		        plan_period = $2,
-		        cancel_email_sent_at = NULL
-		  WHERE id = $3`,
-		subID, req.Plan, user.ID,
+		        subscription_status      = 'created',
+		        plan_period              = $2,
+		        plan_currency            = COALESCE(plan_currency, $3),
+		        cancel_email_sent_at     = NULL
+		  WHERE id                        = $4`,
+		subID, req.Plan, currency, user.ID,
 	); err != nil {
 		slog.ErrorContext(r.Context(), "persist subscription_id failed", "error", err, "user_id", user.ID, "sub_id", subID)
 	}
@@ -610,13 +636,24 @@ func (s *server) handleSubscriptionCharged(ctx context.Context, subEntity, payme
 	purpose, _ := notes["purpose"].(string)
 	isSwitchCharge := purpose == "plan_switch"
 
+	// Read notes.currency defensively: legacy subs created before the dual-
+	// currency rollout have no such note; default to USD so we don't NULL out
+	// a previously-set plan_currency. COALESCE below keeps the lock-in
+	// invariant even if notes.currency is bogus.
+	planCurrency, _ := notes["currency"].(string)
+	planCurrency = normalizeCurrency(planCurrency)
+
 	if _, err := s.db.ExecContext(ctx,
 		`UPDATE users
-		   SET plan_tier = 'paid', plan_period = $1, plan_paid_at = NOW(),
-		       razorpay_subscription_id = $2, subscription_status = 'active',
-		       current_period_end = $3
-		 WHERE id = $4`,
-		period, subID, periodEnd, userID,
+		   SET plan_tier                = 'paid',
+		       plan_period              = $1,
+		       plan_paid_at             = NOW(),
+		       razorpay_subscription_id = $2,
+		       subscription_status      = 'active',
+		       current_period_end       = $3,
+		       plan_currency            = COALESCE(plan_currency, $4)
+		 WHERE id                        = $5`,
+		period, subID, periodEnd, planCurrency, userID,
 	); err != nil {
 		slog.Error("subscription.charged: user update failed", "error", err, "user_id", userID, "sub_id", subID)
 		return
@@ -859,19 +896,67 @@ func (s *server) handleMigrateResource(w http.ResponseWriter, r *http.Request) {
 
 // ── Pure helpers (testable without DB / HTTP / Razorpay) ────────────────────
 
-// planConfig maps the frontend-facing plan name ("monthly" / "annual") to the
-// Razorpay plan_id, display label, and total_count we send to
-// subscription.create. total_count caps how many times Razorpay auto-renews
-// before the subscription ends — 120 months = 10 years for monthly, 10 years
-// for annual, both effectively "until the user cancels".
-func planConfig(plan string, cfg RazorpayConfig) (planID, label string, totalCount int, ok bool) {
+// planConfig maps the frontend-facing (plan, currency) pair to the Razorpay
+// plan_id, display label, and total_count we send to subscription.create.
+// total_count caps how many times Razorpay auto-renews before the subscription
+// ends — 120 months = 10 years for monthly, 10 years for annual, both
+// effectively "until the user cancels".
+//
+// Currency must be "USD" or "INR" (case-insensitive). An empty or unknown
+// currency falls back to USD — this keeps the legacy single-currency flow
+// working if a caller forgets to thread currency through. The returned label
+// includes the currency so the dashboard and emails don't have to re-derive it.
+//
+// When a currency-specific plan id is not configured (e.g. the ops team hasn't
+// set RAZORPAY_PLAN_ID_INR_MONTHLY yet) the USD fallback fields
+// PlanIDMonthly / PlanIDAnnual are used — callers treat an empty planID as
+// "not configured" and return 503, so a USD-only deployment still works.
+func planConfig(plan, currency string, cfg RazorpayConfig) (planID, label string, totalCount int, ok bool) {
+	cur := normalizeCurrency(currency)
 	switch plan {
 	case "monthly":
-		return cfg.PlanIDMonthly, "Developer · Monthly", 120, true
+		return pickPlanID(cur, cfg.PlanIDUSDMonthly, cfg.PlanIDINRMonthly, cfg.PlanIDMonthly),
+			"Developer · Monthly (" + cur + ")", 120, true
 	case "annual":
-		return cfg.PlanIDAnnual, "Developer · Annual", 10, true
+		return pickPlanID(cur, cfg.PlanIDUSDYearly, cfg.PlanIDINRYearly, cfg.PlanIDAnnual),
+			"Developer · Annual (" + cur + ")", 10, true
 	}
 	return "", "", 0, false
+}
+
+// normalizeCurrency canonicalises user input into the uppercase ISO code we
+// persist and ship to Razorpay. Everything except INR collapses to USD so a
+// stray "", "eur", or "INR " still lands on a valid plan id.
+func normalizeCurrency(cur string) string {
+	c := strings.ToUpper(strings.TrimSpace(cur))
+	if c == "INR" {
+		return "INR"
+	}
+	return "USD"
+}
+
+// isSupportedCurrency reports whether the request-time currency is one we can
+// act on (USD or INR, case-insensitive). Callers should pre-check before
+// normalizing so a bogus "EUR" is rejected with invalid_currency instead of
+// silently coerced to USD.
+func isSupportedCurrency(cur string) bool {
+	c := strings.ToUpper(strings.TrimSpace(cur))
+	return c == "USD" || c == "INR"
+}
+
+// pickPlanID returns the currency-specific plan id, or the USD fallback if
+// the currency-specific id is empty. The fallback exists so a deploy that
+// forgot to set RAZORPAY_PLAN_ID_INR_* still works (it'll just use the legacy
+// USD plan id) — callers that really need INR will notice via the empty
+// `notes.currency` path showing USD charges on their Razorpay dashboard.
+func pickPlanID(currency, usdID, inrID, usdFallback string) string {
+	if currency == "INR" && inrID != "" {
+		return inrID
+	}
+	if currency == "USD" && usdID != "" {
+		return usdID
+	}
+	return usdFallback
 }
 
 // subscriptionStatusBlocksNew reports whether an existing subscription in the

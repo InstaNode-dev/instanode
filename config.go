@@ -112,11 +112,19 @@ type RazorpayConfig struct {
 	KeyID         string `yaml:"key_id"`
 	KeySecret     string `yaml:"key_secret"`
 	WebhookSecret string `yaml:"webhook_secret"`
-	// Plan IDs for recurring subscriptions. Created once in the Razorpay
-	// dashboard (or via POST /v1/plans) — amount/interval is fixed there.
-	// When empty, the subscription endpoints return 503.
+	// Legacy (USD-only) plan IDs. Kept as the fallback when a currency-scoped
+	// plan ID below is missing, so rollouts that forget the new envs don't
+	// break /billing/create-subscription.
 	PlanIDMonthly string `yaml:"plan_id_monthly"`
 	PlanIDAnnual  string `yaml:"plan_id_annual"`
+	// Currency-scoped plan IDs. Razorpay subscriptions are bound to a single
+	// currency at plan-creation time, so USD vs INR users subscribe to
+	// distinct plan IDs. When empty, planConfig falls back to PlanIDMonthly /
+	// PlanIDAnnual above (USD).
+	PlanIDUSDMonthly string `yaml:"plan_id_usd_monthly"`
+	PlanIDUSDYearly  string `yaml:"plan_id_usd_yearly"`
+	PlanIDINRMonthly string `yaml:"plan_id_inr_monthly"`
+	PlanIDINRYearly  string `yaml:"plan_id_inr_yearly"`
 }
 
 type JWTConfig struct {
@@ -287,6 +295,26 @@ func (c *Config) overrideWithEnv() {
 	if c.Razorpay.PlanIDAnnual == "" {
 		if v := os.Getenv("RAZORPAY_PLAN_ID_ANNUAL"); v != "" {
 			c.Razorpay.PlanIDAnnual = v
+		}
+	}
+	if c.Razorpay.PlanIDUSDMonthly == "" {
+		if v := os.Getenv("RAZORPAY_PLAN_ID_USD_MONTHLY"); v != "" {
+			c.Razorpay.PlanIDUSDMonthly = v
+		}
+	}
+	if c.Razorpay.PlanIDUSDYearly == "" {
+		if v := os.Getenv("RAZORPAY_PLAN_ID_USD_YEARLY"); v != "" {
+			c.Razorpay.PlanIDUSDYearly = v
+		}
+	}
+	if c.Razorpay.PlanIDINRMonthly == "" {
+		if v := os.Getenv("RAZORPAY_PLAN_ID_INR_MONTHLY"); v != "" {
+			c.Razorpay.PlanIDINRMonthly = v
+		}
+	}
+	if c.Razorpay.PlanIDINRYearly == "" {
+		if v := os.Getenv("RAZORPAY_PLAN_ID_INR_YEARLY"); v != "" {
+			c.Razorpay.PlanIDINRYearly = v
 		}
 	}
 	if c.JWT.Secret == "" {

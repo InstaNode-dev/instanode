@@ -47,7 +47,12 @@ type User struct {
 	PendingPlanChange      *string    `json:"pending_plan_change,omitempty"`
 	PendingPlanEffectiveAt *time.Time `json:"pending_plan_effective_at,omitempty"`
 	PendingPlanSubID       *string    `json:"pending_plan_sub_id,omitempty"`
-	CreatedAt              time.Time  `json:"created_at"`
+	// PlanCurrency is the ISO currency code ("USD" or "INR") the user's paid
+	// plan is billed in. NULL for free users; set at subscription creation
+	// time and enforced as a lock-in on plan-switches so a USD subscriber
+	// cannot jump to an INR plan (or vice versa) via the API.
+	PlanCurrency *string   `json:"plan_currency,omitempty"`
+	CreatedAt    time.Time `json:"created_at"`
 }
 
 type Claims struct {
@@ -110,12 +115,14 @@ func (s *server) authUser(r *http.Request) *User {
 	qerr := s.db.QueryRowContext(ctx,
 		`SELECT id, github_id, email, razorpay_customer_id, plan_tier, plan_period, plan_paid_at,
 		        razorpay_subscription_id, subscription_status, current_period_end,
-		        pending_plan_change, pending_plan_effective_at, pending_plan_sub_id, created_at
+		        pending_plan_change, pending_plan_effective_at, pending_plan_sub_id,
+		        plan_currency, created_at
 		 FROM users WHERE id = $1`, claims.UserID,
 	).Scan(&user.ID, &user.GitHubID, &user.Email, &user.RazorpayCustomerID,
 		&user.PlanTier, &user.PlanPeriod, &user.PlanPaidAt,
 		&user.RazorpaySubscriptionID, &user.SubscriptionStatus, &user.CurrentPeriodEnd,
-		&user.PendingPlanChange, &user.PendingPlanEffectiveAt, &user.PendingPlanSubID, &user.CreatedAt)
+		&user.PendingPlanChange, &user.PendingPlanEffectiveAt, &user.PendingPlanSubID,
+		&user.PlanCurrency, &user.CreatedAt)
 	if qerr != nil {
 		return nil
 	}
@@ -138,12 +145,14 @@ func (s *server) getUserFromRequest(r *http.Request) (*User, error) {
 	err = s.db.QueryRowContext(ctx,
 		`SELECT id, github_id, email, razorpay_customer_id, plan_tier, plan_period, plan_paid_at,
 		        razorpay_subscription_id, subscription_status, current_period_end,
-		        pending_plan_change, pending_plan_effective_at, pending_plan_sub_id, created_at
+		        pending_plan_change, pending_plan_effective_at, pending_plan_sub_id,
+		        plan_currency, created_at
 		 FROM users WHERE id = $1`, claims.UserID,
 	).Scan(&user.ID, &user.GitHubID, &user.Email, &user.RazorpayCustomerID,
 		&user.PlanTier, &user.PlanPeriod, &user.PlanPaidAt,
 		&user.RazorpaySubscriptionID, &user.SubscriptionStatus, &user.CurrentPeriodEnd,
-		&user.PendingPlanChange, &user.PendingPlanEffectiveAt, &user.PendingPlanSubID, &user.CreatedAt)
+		&user.PendingPlanChange, &user.PendingPlanEffectiveAt, &user.PendingPlanSubID,
+		&user.PlanCurrency, &user.CreatedAt)
 	if err != nil {
 		return nil, err
 	}

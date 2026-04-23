@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	razorpay "github.com/razorpay/razorpay-go"
 )
 
 // Plan-switch feature (monthly ↔ annual).
@@ -349,8 +348,11 @@ func (s *server) handleCancelPlanChange(w http.ResponseWriter, r *http.Request) 
 // ── Reconciler hook ─────────────────────────────────────────────────────────
 
 // razorpaySubCreator abstracts the Razorpay SDK call so tests can stub it.
-// Returns the new subscription id on success.
-type razorpaySubCreator func(ctx context.Context, cfg RazorpayConfig, period string, userID uuid.UUID) (string, error)
+// Returns the new subscription id on success. currency is the user's locked-in
+// ISO code ("USD" or "INR") so a plan switch never jumps currencies — even
+// if the user's plan_currency row was somehow NULL'd, the caller normalizes
+// to USD before calling us.
+type razorpaySubCreator func(ctx context.Context, cfg RazorpayConfig, period, currency string, userID uuid.UUID) (string, error)
 
 // razorpaySubCanceller abstracts the Razorpay cancel call so tests can stub it.
 type razorpaySubCanceller func(ctx context.Context, cfg RazorpayConfig, subID string) error
@@ -382,7 +384,7 @@ func promotePendingPlanSwitches(
 	}
 
 	rows, err := db.QueryContext(ctx, `
-		SELECT id, razorpay_subscription_id, pending_plan_change, pending_plan_effective_at
+		SELECT id, razorpay_subscription_id, pending_plan_change, pending_plan_effective_at, plan_currency
 		  FROM users
 		 WHERE pending_plan_change     IS NOT NULL
 		   AND pending_plan_effective_at IS NOT NULL
@@ -397,6 +399,7 @@ func promotePendingPlanSwitches(
 		userID      uuid.UUID
 		oldSubID    *string
 		target      string
+		currency    string
 		effectiveAt time.Time
 	}
 	var todo []pending
@@ -404,7 +407,8 @@ func promotePendingPlanSwitches(
 		var p pending
 		var targetPtr *string
 		var effectivePtr *time.Time
-		if err := rows.Scan(&p.userID, &p.oldSubID, &targetPtr, &effectivePtr); err != nil {
+		var currencyPtr *string
+		if err := rows.Scan(&p.userID, &p.oldSubID, &targetPtr, &effectivePtr, &currencyPtr); err != nil {
 			continue
 		}
 		if targetPtr == nil || effectivePtr == nil {
@@ -412,6 +416,11 @@ func promotePendingPlanSwitches(
 		}
 		p.target = *targetPtr
 		p.effectiveAt = *effectivePtr
+		// Legacy rows pre-dual-currency have plan_currency = NULL; fall back
+		// to USD so those switches continue using the USD plan id pool.
+		if currencyPtr != nil {
+			p.currency = *currencyPtr
+		}
 		todo = append(todo, p)
 	}
 
@@ -428,7 +437,7 @@ func promotePendingPlanSwitches(
 			}
 		}
 
-		newSubID, err := createSub(ctx, cfg.Razorpay, p.target, p.userID)
+		newSubID, err := createSub(ctx, cfg.Razorpay, p.target, p.currency, p.userID)
 		if err != nil {
 			slog.Error("plan switch: new sub create failed",
 				"error", err, "user_id", p.userID, "target", p.target)
@@ -474,9 +483,11 @@ func promotePendingPlanSwitches(
 // the pattern in handleCreateSubscription.
 
 // liveRazorpayCreateSub creates a brand-new subscription for the target plan.
-// Returns the new subscription id.
-func liveRazorpayCreateSub(ctx context.Context, cfg RazorpayConfig, period string, userID uuid.UUID) (string, error) {
-	planID, _, totalCount, ok := planConfig(period, cfg)
+// Returns the new subscription id. currency is the caller's locked-in currency
+// (USD or INR); it selects the right Razorpay plan id pool and is stamped on
+// notes.currency so the activation webhook preserves the lock-in on renewal.
+func liveRazorpayCreateSub(ctx context.Context, cfg RazorpayConfig, period, currency string, userID uuid.UUID) (string, error) {
+	planID, _, totalCount, ok := planConfig(period, currency, cfg)
 	if !ok {
 		return "", fmt.Errorf("plan switch: invalid target period %q", period)
 	}
@@ -484,9 +495,10 @@ func liveRazorpayCreateSub(ctx context.Context, cfg RazorpayConfig, period strin
 		return "", fmt.Errorf("plan switch: plan_id not configured for %q", period)
 	}
 	notes := map[string]interface{}{
-		"user_id": userID.String(),
-		"plan":    period,
-		"purpose": "plan_switch",
+		"user_id":  userID.String(),
+		"plan":     period,
+		"currency": normalizeCurrency(currency),
+		"purpose":  "plan_switch",
 	}
 	type subResult struct {
 		data map[string]interface{}
@@ -494,7 +506,7 @@ func liveRazorpayCreateSub(ctx context.Context, cfg RazorpayConfig, period strin
 	}
 	resCh := make(chan subResult, 1)
 	go func() {
-		client := razorpay.NewClient(cfg.KeyID, cfg.KeySecret)
+		client := newRazorpayClient(cfg)
 		data, err := client.Subscription.Create(map[string]interface{}{
 			"plan_id":         planID,
 			"total_count":     totalCount,
@@ -528,7 +540,7 @@ func liveRazorpayCancelSub(ctx context.Context, cfg RazorpayConfig, subID string
 	type cancelResult struct{ err error }
 	resCh := make(chan cancelResult, 1)
 	go func() {
-		client := razorpay.NewClient(cfg.KeyID, cfg.KeySecret)
+		client := newRazorpayClient(cfg)
 		_, err := client.Subscription.Cancel(subID, map[string]interface{}{"cancel_at_cycle_end": 0}, nil)
 		resCh <- cancelResult{err: err}
 	}()
