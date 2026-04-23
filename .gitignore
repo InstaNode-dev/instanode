@@ -14,3 +14,4 @@ lite
 .vscode/
 .idea/
 *.swp
+.gstack/

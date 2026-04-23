@@ -76,7 +76,7 @@ func (s *server) handleNewDB(w http.ResponseWriter, r *http.Request) {
 	isAuthed := authedUser != nil
 	isPaid := isAuthed && authedUser.PlanTier == "paid"
 
-  // Idempotent-by-name for authenticated callers: if the user already owns
+	// Idempotent-by-name for authenticated callers: if the user already owns
 	// an active postgres resource with this name, return it. Makes the
 	// "store $DATABASE_URL, re-run the script" pattern safe across runs.
 	if isAuthed {
