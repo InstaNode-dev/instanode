@@ -4,6 +4,20 @@
 server:
   port: "8080"
   base_url: "${APP_URL}"
+  # MarketingURL is the public website host. Used for post-OAuth
+  # redirects, dashboard upgrade links, and email CTAs. On this
+  # deployment: api.instanode.dev is the API, instanode.dev is the
+  # static marketing site on GitHub Pages.
+  marketing_url: "${MARKETING_URL}"
+  # CookieDomain shares the session cookie across api.example.com
+  # and example.com. Empty = scoped to API host only.
+  cookie_domain: "${COOKIE_DOMAIN}"
+  # CORS exact-match allowlist. The marketing host needs to be here
+  # so dashboard.html fetch() calls with credentials:'include' work.
+  allowed_origins:
+    - "https://instanode.dev"
+    - "http://localhost:5173"
+    - "http://localhost:3000"
   read_timeout: "30s"
   write_timeout: "60s"
   idle_timeout: "120s"
