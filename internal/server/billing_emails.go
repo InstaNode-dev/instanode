@@ -158,6 +158,70 @@ func sendCancelIfUnsent(ctx context.Context, db *sql.DB, em *emailer, userID uui
 	slog.Info("billing email: cancel claimed + sent", "user_id", userID, "period", claim.Period)
 }
 
+// expiredClaim carries the data needed to compose a subscriptionExpiredEmail.
+type expiredClaim struct {
+	Email        string
+	PeriodEnd    time.Time
+	DeletionDate time.Time
+}
+
+// claimSubscriptionExpiredEmail atomically reserves the right to send one
+// "subscription expired" email + downgrades the user's tier in the same
+// UPDATE so the user can't be charged for a stale paid resource limit
+// in the gap between email-claim and tier-downgrade. Only fires when the
+// caller has already verified the user is in the cancelled+past-period
+// state — the WHERE clause is the second-line defence.
+func claimSubscriptionExpiredEmail(ctx context.Context, db *sql.DB, userID uuid.UUID, deletionDate time.Time) (expiredClaim, bool) {
+	var (
+		email     string
+		periodEnd *time.Time
+	)
+	err := db.QueryRowContext(ctx, `
+		UPDATE users
+		   SET subscription_expired_email_sent_at = NOW(),
+		       plan_tier                          = 'free',
+		       subscription_status                = 'expired'
+		 WHERE id                                  = $1
+		   AND plan_tier                           = 'paid'
+		   AND subscription_status                 = 'cancelled'
+		   AND current_period_end IS NOT NULL
+		   AND current_period_end                  < NOW()
+		   AND subscription_expired_email_sent_at IS NULL
+		RETURNING email, current_period_end`,
+		userID,
+	).Scan(&email, &periodEnd)
+	if err != nil {
+		if err != sql.ErrNoRows {
+			slog.Warn("claimSubscriptionExpiredEmail: query failed", "error", err, "user_id", userID)
+		}
+		return expiredClaim{}, false
+	}
+	end := time.Time{}
+	if periodEnd != nil {
+		end = *periodEnd
+	}
+	return expiredClaim{Email: email, PeriodEnd: end, DeletionDate: deletionDate}, true
+}
+
+// sendExpiredIfUnsent atomically downgrades the user + claims the email
+// slot. Caller is expected to also set expires_at on the user's still-paid
+// resources (separate UPDATE so the row count tells the reaper how many
+// resources got grace-tagged, useful for slogging).
+func sendExpiredIfUnsent(ctx context.Context, db *sql.DB, em *emailer, userID uuid.UUID, deletionDate time.Time) bool {
+	claim, ok := claimSubscriptionExpiredEmail(ctx, db, userID, deletionDate)
+	if !ok || claim.Email == "" {
+		return false
+	}
+	if em != nil {
+		subject, html := subscriptionExpiredEmail(claim.PeriodEnd, claim.DeletionDate)
+		em.SendAsync(claim.Email, subject, html)
+	}
+	slog.Info("billing email: expired claimed + sent",
+		"user_id", userID, "period_end", claim.PeriodEnd.Format("2006-01-02"),
+		"deletion_date", claim.DeletionDate.Format("2006-01-02"))
+	return true
+}
+
 // planSwitchScheduledClaim carries the data needed to compose a
 // "switch scheduled" email.
 type planSwitchScheduledClaim struct {

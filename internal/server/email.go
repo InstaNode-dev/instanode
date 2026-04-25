@@ -120,7 +120,7 @@ func subscriptionCancelledEmail(plan string, periodEnd time.Time) (subject, html
 	subject = "Your instanode subscription has been cancelled"
 	untilLine := ""
 	if !periodEnd.IsZero() {
-		untilLine = fmt.Sprintf("<p>Paid access continues until <strong>%s</strong>. After that, your account reverts to the free tier.</p>", periodEnd.Format("2006-01-02"))
+		untilLine = fmt.Sprintf("<p>Paid access continues until <strong>%s</strong>. After that, you'll have a short grace window to re-subscribe before your existing databases and webhooks are deleted — we'll email you again with the exact deletion date.</p>", periodEnd.Format("2006-01-02"))
 	} else {
 		untilLine = "<p>Your account will revert to the free tier at the end of the current billing period.</p>"
 	}
@@ -128,9 +128,29 @@ func subscriptionCancelledEmail(plan string, periodEnd time.Time) (subject, html
 <html><body style="font-family:system-ui,sans-serif;max-width:560px;margin:0 auto;padding:24px;color:#222;">
 <p>We've cancelled your <strong>%s</strong> subscription — no further charges will be made.</p>
 %s
-<p>Resources provisioned while you were on the paid plan stay reachable, but they'll start to expire on the free-tier TTL once your access downgrades. Re-subscribe any time from the <a href="https://instanode.dev/pricing.html">pricing page</a> to keep them permanent.</p>
+<p>Resources provisioned while you were on the paid plan stay reachable through your paid period and the grace window after it. Re-subscribe any time from the <a href="https://instanode.dev/pricing.html">pricing page</a> to keep them permanent.</p>
 <p style="color:#888;font-size:11px;margin-top:32px;">For any issues or queries, contact <a href="mailto:contact@instanode.dev" style="color:#888;">contact@instanode.dev</a>.</p>
 </body></html>`, plan, untilLine)
+	return
+}
+
+// subscriptionExpiredEmail fires once when the reaper downgrades a user
+// whose paid period elapsed and who hasn't re-subscribed. It tells them
+// the exact date their existing databases and webhooks will be deleted —
+// the grace window — and how to keep them.
+func subscriptionExpiredEmail(periodEnd, deletionDate time.Time) (subject, html string) {
+	subject = "Your instanode access has ended — data deletion in " + deletionDate.Format("2006-01-02")
+	html = fmt.Sprintf(`<!doctype html>
+<html><body style="font-family:system-ui,sans-serif;max-width:560px;margin:0 auto;padding:24px;color:#222;">
+<p>Your paid subscription ended on <strong>%s</strong>. Your account is now on the free tier.</p>
+<p style="background:#fff5f5;border-left:3px solid #e33;padding:10px 14px;margin:16px 0;color:#933;font-size:13px;">
+  <strong>Action required:</strong> the databases and webhooks you provisioned on the paid plan will be deleted on <strong>%s</strong>.
+  Re-subscribe before then to restore permanent access — no data loss.
+</p>
+<p>To keep your data: <a href="https://instanode.dev/pricing.html">re-subscribe at instanode.dev/pricing.html</a>.</p>
+<p>To export it: connect to each <code>connection_url</code> with <code>pg_dump</code> any time before the deletion date.</p>
+<p style="color:#888;font-size:11px;margin-top:32px;">For any issues or queries, reply to this email.</p>
+</body></html>`, periodEnd.Format("January 2, 2006"), deletionDate.Format("January 2, 2006"))
 	return
 }
 

@@ -159,6 +159,11 @@ type LimitsConfig struct {
 	WebhookMaxStored      int64   `yaml:"webhook_max_stored"`
 	IPv4CIDRPrefix        int     `yaml:"ipv4_cidr_prefix"`
 	IPv6CIDRPrefix        int     `yaml:"ipv6_cidr_prefix"`
+	// SubscriptionGracePeriod is how long after current_period_end a
+	// cancelled paying user retains access to their existing resources
+	// before they're deleted by the reaper. Default 168h (7 days) — gives
+	// the user a working week to either re-subscribe or export their data.
+	SubscriptionGracePeriod string `yaml:"subscription_grace_period"`
 }
 
 type ReaperConfig struct {
@@ -217,15 +222,16 @@ func DefaultConfig() *Config {
 			URL: "redis://localhost:6379",
 		},
 		Limits: LimitsConfig{
-			RateRequestsPerSecond: 10,
-			RateBurst:             20,
-			MaxProvisionsPerDay:   5,
-			AnonTTL:               "24h",
-			MaxRequestBodyBytes:   1 << 20, // 1 MB
-			WebhookMaxBodyBytes:   1 << 20, // 1 MB
-			WebhookMaxStored:      100,
-			IPv4CIDRPrefix:        24,
-			IPv6CIDRPrefix:        48,
+			RateRequestsPerSecond:   10,
+			RateBurst:               20,
+			MaxProvisionsPerDay:     5,
+			AnonTTL:                 "24h",
+			MaxRequestBodyBytes:     1 << 20, // 1 MB
+			WebhookMaxBodyBytes:     1 << 20, // 1 MB
+			WebhookMaxStored:        100,
+			IPv4CIDRPrefix:          24,
+			IPv6CIDRPrefix:          48,
+			SubscriptionGracePeriod: "168h", // 7 days
 		},
 		Reaper: ReaperConfig{
 			Interval:  "5m",
@@ -423,6 +429,21 @@ func (c *Config) ParsedAnonTTL() time.Duration {
 	if err != nil {
 		slog.Warn("config: invalid anon_ttl, defaulting to 24h", "error", err)
 		return 24 * time.Hour
+	}
+	return d
+}
+
+// ParsedSubscriptionGracePeriod is how long a cancelled-and-period-elapsed
+// paying user keeps their existing resources before the reaper drops them.
+// Defaults to 7 days when unset or invalid.
+func (c *Config) ParsedSubscriptionGracePeriod() time.Duration {
+	if c.Limits.SubscriptionGracePeriod == "" {
+		return 7 * 24 * time.Hour
+	}
+	d, err := time.ParseDuration(c.Limits.SubscriptionGracePeriod)
+	if err != nil {
+		slog.Warn("config: invalid subscription_grace_period, defaulting to 168h", "error", err)
+		return 7 * 24 * time.Hour
 	}
 	return d
 }

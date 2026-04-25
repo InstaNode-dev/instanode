@@ -122,8 +122,9 @@ func Run() {
 		payment:      payment,
 	}
 
-	// Start the expired resource reaper.
-	startReaper(db, rdb, cfg, cfg.Database.CustomerURL)
+	// Start the expired resource reaper. Also runs the subscription-
+	// expiry pass that downgrades cancelled users past their grace period.
+	startReaper(db, rdb, s.email, cfg, cfg.Database.CustomerURL)
 
 	// Start the inbound-email reconciler. Polls Brevo's /v3/inbound/events API
 	// on an interval and backfills metadata for any message whose webhook
