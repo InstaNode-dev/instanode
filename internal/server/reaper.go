@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -16,7 +17,7 @@ import (
 // and marks resource rows as 'expired'. It also enforces storage quotas
 // on active Postgres resources (Postgres has no native per-DB disk quota,
 // so we scan pg_database_size() periodically and lock over-limit DBs).
-func startReaper(db *sql.DB, rdb *redis.Client, cfg *Config, custDBURL string) {
+func startReaper(db *sql.DB, rdb *redis.Client, em *emailer, cfg *Config, custDBURL string) {
 	interval := cfg.ParsedReaperInterval()
 	go func() {
 		ticker := time.NewTicker(interval)
@@ -26,10 +27,93 @@ func startReaper(db *sql.DB, rdb *redis.Client, cfg *Config, custDBURL string) {
 			ctx, cancel := context.WithTimeout(context.Background(), timeout)
 			reapExpired(ctx, db, rdb, cfg, custDBURL)
 			enforceStorageQuota(ctx, db, cfg, custDBURL)
+			expireCancelledSubscriptions(ctx, db, em, cfg)
 			cancel()
 		}
 	}()
 	slog.Info("reaper started", "interval", interval.String())
+}
+
+// expireCancelledSubscriptions downgrades any user whose subscription was
+// cancelled and whose paid period has elapsed. For each match:
+//
+//  1. Set expires_at on their still-permanent resources to NOW + grace, so
+//     the existing per-resource reaper pass naturally drops them after the
+//     grace window — no second deletion path to maintain.
+//  2. Atomically downgrade plan_tier='paid' → 'free', set
+//     subscription_status='expired', set the email-sent claim flag, and
+//     send the warning email (one-time, claim-locked).
+//
+// Idempotent: re-running over an already-downgraded user is a no-op
+// (subscription_expired_email_sent_at IS NOT NULL filters them out).
+//
+// Order matters: the resources UPDATE runs FIRST so a crash between the
+// two writes leaves the resources tagged for deletion (correct end state)
+// rather than the user downgraded but resources still permanent (which
+// would then never be picked up because the WHERE clause requires
+// plan_tier='paid').
+func expireCancelledSubscriptions(ctx context.Context, db *sql.DB, em *emailer, cfg *Config) {
+	grace := cfg.ParsedSubscriptionGracePeriod()
+	deletionDate := time.Now().UTC().Add(grace)
+
+	rows, err := db.QueryContext(ctx, `
+		SELECT id
+		  FROM users
+		 WHERE plan_tier                           = 'paid'
+		   AND subscription_status                 = 'cancelled'
+		   AND current_period_end IS NOT NULL
+		   AND current_period_end                  < NOW()
+		   AND subscription_expired_email_sent_at IS NULL
+		 LIMIT $1`, cfg.Reaper.BatchSize)
+	if err != nil {
+		slog.Error("reaper: subscription-expiry query failed", "error", err)
+		return
+	}
+	defer rows.Close()
+
+	type pending struct{ id string }
+	var users []pending
+	for rows.Next() {
+		var p pending
+		if err := rows.Scan(&p.id); err != nil {
+			slog.Error("reaper: subscription-expiry scan failed", "error", err)
+			continue
+		}
+		users = append(users, p)
+	}
+	rows.Close()
+
+	for _, u := range users {
+		// Step 1: tag the user's permanent resources with the grace-window
+		// expires_at. The per-resource reaper pass will drop them naturally
+		// once expires_at elapses.
+		res, err := db.ExecContext(ctx, `
+			UPDATE resources
+			   SET expires_at = $1
+			 WHERE migrated_to_user_id = $2
+			   AND status              = 'active'
+			   AND expires_at IS NULL`,
+			deletionDate, u.id)
+		if err != nil {
+			slog.Error("reaper: tag resources for grace expiry failed",
+				"user_id", u.id, "error", err)
+			continue
+		}
+		taggedCount, _ := res.RowsAffected()
+
+		// Step 2: claim the email slot, downgrade tier, send warning email.
+		// All in one atomic UPDATE via the claim helper.
+		userID, perr := uuid.Parse(u.id)
+		if perr != nil {
+			slog.Error("reaper: parse user id failed", "id", u.id, "error", perr)
+			continue
+		}
+		if sendExpiredIfUnsent(ctx, db, em, userID, deletionDate) {
+			slog.Info("reaper: subscription expired",
+				"user_id", u.id, "resources_tagged", taggedCount,
+				"deletion_date", deletionDate.Format("2006-01-02"))
+		}
+	}
 }
 
 func reapExpired(ctx context.Context, db *sql.DB, rdb *redis.Client, cfg *Config, custDBURL string) {

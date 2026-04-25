@@ -42,6 +42,10 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS razorpay_subscription_short_url TEXT;
 -- ran simultaneously.
 ALTER TABLE users ADD COLUMN IF NOT EXISTS receipt_email_sent_at TIMESTAMPTZ;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS cancel_email_sent_at  TIMESTAMPTZ;
+-- Set when the reaper downgrades a cancelled-past-period user to the free
+-- tier. Same claim-lock semantics as the others — exactly-once email per
+-- subscription lifecycle.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS subscription_expired_email_sent_at TIMESTAMPTZ;
 
 -- Plan-switch (monthly ↔ annual). The switch is scheduled — we don't tear
 -- down the current subscription the moment the user clicks, because the
