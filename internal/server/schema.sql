@@ -25,6 +25,13 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS plan_paid_at TIMESTAMPTZ;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS razorpay_subscription_id TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS subscription_status TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS current_period_end TIMESTAMPTZ;
+-- Stored short_url makes /billing/create-subscription idempotent for users
+-- with a still-payable subscription. If the user has subscription_status
+-- 'created' (Razorpay sub provisioned but mandate not yet signed), a second
+-- /create call returns the existing short_url instead of spinning up a
+-- duplicate sub on Razorpay's side. Cleared once the sub transitions to
+-- active (payment captured) or terminal (cancelled/halted/completed).
+ALTER TABLE users ADD COLUMN IF NOT EXISTS razorpay_subscription_short_url TEXT;
 
 -- Email idempotency markers. The webhook handlers, the one-time-order handler,
 -- and the billing reconciler all race to send confirmation / cancellation
