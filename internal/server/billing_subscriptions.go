@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -55,6 +56,45 @@ func (s *server) handleCreateSubscription(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusConflict, "already_subscribed",
 			"You already have a subscription. Cancel the current one before starting a new one.")
 		return
+	}
+
+	// Idempotency: if the user already has a subscription stuck at status
+	// 'created' (Razorpay provisioned but customer hasn't signed the
+	// mandate / completed first charge), return that subscription's
+	// short_url instead of creating a second one. Without this, every
+	// double-click on Subscribe spawns a parallel sub on Razorpay's side
+	// and the webhook for whichever one actually gets paid races to
+	// resolve back to our user record. We saw this in prod — a user paid
+	// sub_B but their account row pointed at sub_A, so the charge
+	// webhook found no matching sub_id and never promoted them.
+	if user.SubscriptionStatus != nil && *user.SubscriptionStatus == "created" {
+		idemCtx, idemCancel := context.WithTimeout(r.Context(), 5*time.Second)
+		defer idemCancel()
+		var existingSubID, existingShortURL sql.NullString
+		err := s.db.QueryRowContext(idemCtx,
+			`SELECT razorpay_subscription_id, razorpay_subscription_short_url
+			   FROM users
+			  WHERE id = $1`,
+			user.ID,
+		).Scan(&existingSubID, &existingShortURL)
+		if err == nil && existingSubID.Valid && existingShortURL.Valid && existingShortURL.String != "" {
+			slog.InfoContext(r.Context(), "create-subscription: returning existing pending sub",
+				"user_id", user.ID, "sub_id", existingSubID.String)
+			writeJSON(w, http.StatusOK, CreateSubscriptionResponse{
+				SubscriptionID: existingSubID.String,
+				ShortURL:       existingShortURL.String,
+				KeyID:          s.cfg.Razorpay.KeyID,
+				PlanLabel:      "Existing pending subscription — complete payment at the same short_url",
+			})
+			return
+		}
+		// Fall through if lookup failed or short_url isn't stored (legacy
+		// row pre-migration). Worst case we create a duplicate, same as
+		// pre-fix behaviour.
+		if err != nil {
+			slog.WarnContext(r.Context(), "create-subscription idempotency lookup failed; falling through",
+				"error", err, "user_id", user.ID)
+		}
 	}
 
 	// Currency lock-in: if the user already has a paid plan_currency (from a
@@ -137,13 +177,14 @@ func (s *server) handleCreateSubscription(w http.ResponseWriter, r *http.Request
 	// defence in depth behind the explicit check above.
 	if _, err := s.db.ExecContext(ctx,
 		`UPDATE users
-		    SET razorpay_subscription_id = $1,
-		        subscription_status      = 'created',
-		        plan_period              = $2,
-		        plan_currency            = COALESCE(plan_currency, $3),
-		        cancel_email_sent_at     = NULL
-		  WHERE id                        = $4`,
-		subID, req.Plan, currency, user.ID,
+		    SET razorpay_subscription_id        = $1,
+		        razorpay_subscription_short_url = $2,
+		        subscription_status             = 'created',
+		        plan_period                     = $3,
+		        plan_currency                   = COALESCE(plan_currency, $4),
+		        cancel_email_sent_at            = NULL
+		  WHERE id                               = $5`,
+		subID, shortURL, req.Plan, currency, user.ID,
 	); err != nil {
 		slog.ErrorContext(r.Context(), "persist subscription_id failed", "error", err, "user_id", user.ID, "sub_id", subID)
 	}
@@ -191,14 +232,15 @@ func (s *server) handleSubscriptionCharged(ctx context.Context, subEntity, payme
 
 	if _, err := s.db.ExecContext(ctx,
 		`UPDATE users
-		   SET plan_tier                = 'paid',
-		       plan_period              = $1,
-		       plan_paid_at             = NOW(),
-		       razorpay_subscription_id = $2,
-		       subscription_status      = 'active',
-		       current_period_end       = $3,
-		       plan_currency            = COALESCE(plan_currency, $4)
-		 WHERE id                        = $5`,
+		   SET plan_tier                       = 'paid',
+		       plan_period                     = $1,
+		       plan_paid_at                    = NOW(),
+		       razorpay_subscription_id        = $2,
+		       razorpay_subscription_short_url = NULL,
+		       subscription_status             = 'active',
+		       current_period_end              = $3,
+		       plan_currency                   = COALESCE(plan_currency, $4)
+		 WHERE id                               = $5`,
 		period, subID, periodEnd, planCurrency, userID,
 	); err != nil {
 		slog.Error("subscription.charged: user update failed", "error", err, "user_id", userID, "sub_id", subID)
